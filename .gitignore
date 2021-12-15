@@ -1,0 +1,11 @@
+# linux
+*~
+.fuse_hidden*
+.Trash-*
+
+# MacOS
+.DS_Store
+._*
+
+# jupyter
+*.ipynb_checkpoints/
