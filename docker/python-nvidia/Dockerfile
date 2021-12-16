@@ -37,7 +37,6 @@ RUN pip install -r requirements.txt --no-cache-dir
 ########## jupyter lab ##########
 RUN pip install jupyterlab "ipywidgets>=7.5"
 RUN jupyter nbextension enable --py widgetsnbextension
-RUN jupyter labextension install jupyterlab-plotly plotlywidget
 
 # needed otherwise bug when opening terminal from jupyter.
 ENV SHELL=/bin/bash
@@ -47,8 +46,6 @@ ENV SHELL=/bin/bash
 RUN apt install sudo
 ENV USERNAME python
 ENV GROUPNAME python
-# ENV UID 5168
-# ENV GID 5168
 ENV UID 5190
 ENV GID 5000
 RUN groupadd --gid $GID $GROUPNAME && \

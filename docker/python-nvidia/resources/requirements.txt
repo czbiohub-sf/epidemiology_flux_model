@@ -13,7 +13,6 @@ psutil
 # plotting
 matplotlib
 seaborn
-plotly==4.12.0
 
 # various
 sympy

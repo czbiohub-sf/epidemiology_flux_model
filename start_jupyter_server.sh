@@ -3,8 +3,8 @@ duser=python
 dpath=$PWD/docker/python-nvidia
 # gpus=
 gpus="--gpus all"
-dimage=gletreut/randmat-python-nvidia
-dname=randmat-python-nvidia
+dimage=gletreut/python-nvidia
+dname=python-nvidia
 dcmd="jupyter lab --no-browser --ip 0.0.0.0"
 
 docker run --rm \
@@ -17,8 +17,3 @@ docker run --rm \
   $gpus \
   -u $duser -h $dname --name $dname  \
   $dimage $dcmd
-
-# -d \
-# jupyter lab --no-browser --ip 0.0.0.0 --port=${dport}
-  # -v /data1/gletreut/data/safegraph:/home/$duser/shared/data \
-  # -v /data1/gletreut/data/CSSEGISandData:/home/$duser/shared/data/CSSEGISandData \
