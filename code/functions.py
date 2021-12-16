@@ -85,7 +85,21 @@ import imageio
 #     return cp.get_array_module(a)
 #   else:
 #     return np
-#
+
+def geo_dist(M1, M2):
+    """
+    Input in degrees.
+    M = (latitude, longitude)
+    """
+    p1, l1 = M1
+    p2, l2 = M2
+    pbar = 0.5*(p1+p2)
+
+    dp = (p1-p2)*np.pi/180.
+    dl = (l1-l2)*np.pi/180.
+    pbar = 0.5*(p1+p2)*np.pi/180.
+    return np.sqrt(dp**2+np.cos(pbar)*dl**2)
+
 # #==============================================================================
 # # modelling
 # #==============================================================================
@@ -108,19 +122,19 @@ import imageio
 #     return -np.sum(ssp.xlogy(hist,hist))*dx - np.log(s)    # - \sum x log(x) (unit variance)
 #
 # ########## fitting methods ##########
-# def fsigmoid(x, *params):
-#     a, b, c, d = list(params)
-#     return a / (1.0 + np.exp(d*(x-b))) + c
-#
-# def fsigmoid_jac(x, *params):
-#     a, b, c, d = list(params)
-#     grad = np.zeros((len(params), len(x)))
-#     grad[0] = 1./(1.0 + np.exp(d*(x-b)))
-#     grad[1] = d*np.exp(d*(x-b)) * a /(1.0 + np.exp(d*(x-b)))**2
-#     grad[2] = np.ones(len(x))
-#     grad[3] = -(x-b)*np.exp(d*(x-b)) * a /(1.0 + np.exp(d*(x-b)))**2
-#     return grad.T
-#
+def fsigmoid(x, *params):
+    a, b, c, d = list(params)
+    return a / (1.0 + np.exp(d*(x-b))) + c
+
+def fsigmoid_jac(x, *params):
+    a, b, c, d = list(params)
+    grad = np.zeros((len(params), len(x)))
+    grad[0] = 1./(1.0 + np.exp(d*(x-b)))
+    grad[1] = d*np.exp(d*(x-b)) * a /(1.0 + np.exp(d*(x-b)))**2
+    grad[2] = np.ones(len(x))
+    grad[3] = -(x-b)*np.exp(d*(x-b)) * a /(1.0 + np.exp(d*(x-b)))**2
+    return grad.T
+
 # def fsigmoid2(x, *params):
 #     a, b, c = list(params)
 #     return a / (1.0 + np.exp(c*(x-b)))
@@ -180,19 +194,19 @@ import imageio
 #   return grad.T
 #
 # ########## Utils ##########
-# def read_df(t, tfmt, store, path):
-#   """
-#   Read a matrix present in a `store` at a certain `path` with
-#   the appropriate formatting of the date `t`.
-#   """
-#   key = Path(path) / t.strftime(tfmt)
-#   df = store[str(key)]
-#   return df
-#
+def read_df(t, tfmt, store, path):
+  """
+  Read a matrix present in a `store` at a certain `path` with
+  the appropriate formatting of the date `t`.
+  """
+  key = Path(path) / t.strftime(tfmt)
+  df = store[str(key)]
+  return df
+
 # def get_population(clusters):
 #   return clusters['population'].to_numpy().astype('int64')
 #
-# def get_infectivity_matrix(F):
+# def get_infectivity_matrix_old(F):
 #   """
 #   Return the infectivity matrix from the input flux matrix
 #   """
@@ -211,30 +225,30 @@ import imageio
 #   B = np.einsum('ij,j,i->ij', B, pinv, pinv)
 #   return B
 #
-# def get_localization_matrix(F):
-#   """
-#   Return the localization matrix from the input flux matrix
-#   """
-#   N = F.shape[0]
-#   if (F.shape[1] != N):
-#     raise ValueError
-#
-#   pvec = F.diagonal()
-#   pinv = np.zeros(N, dtype=np.float_)
-#   idx = pvec > 0.
-#   pinv[idx] = 1./pvec[idx]
-#
-#   L = np.zeros((N,N), dtype=np.float_)
-#   L = F + F.T
-#   np.fill_diagonal(L, pvec)
-#   L = np.einsum('ij,i->ij', L, pinv)
-#
-#   # symmetrize it
-#   L = 0.5*(L+L.T)
-#
-#   return L
-#
-# def get_localization_matrix_vscale(F,V):
+def get_infectivity_matrix(F):
+  """
+  Return the infectivity matrix from the input flux matrix
+  """
+  N = F.shape[0]
+  if (F.shape[1] != N):
+    raise ValueError
+
+  pvec = F.diagonal()
+  pinv = np.zeros(N, dtype=np.float_)
+  idx = pvec > 0.
+  pinv[idx] = 1./pvec[idx]
+
+  L = np.zeros((N,N), dtype=np.float_)
+  L = F + F.T
+  np.fill_diagonal(L, pvec)
+  L = np.einsum('ij,i->ij', L, pinv)
+
+  # symmetrize it
+  L = 0.5*(L+L.T)
+
+  return L
+
+# def get_infectivity_matrix_vscale(F,V):
 #   """
 #   Return the localization matrix from the input flux matrix
 #   INPUT:
@@ -521,47 +535,47 @@ import imageio
 #   return v_new
 #
 # ########## SIR integration ##########
-# def sir_X_to_SI(X, N):
-#   SI = X.reshape((2,N))
-#   return SI[0],SI[1]
-#
-# def sir_SI_to_X(S,I):
-#   return np.ravel(np.array([S,I]))
-#
-# def func_sir_dX(t, X, B, g):
-#   """
-#   X: S, I
-#   B: localization matrix
-#   g: inverse recovery time
-#   """
-#   N = B.shape[0]
-#   S,I = sir_X_to_SI(X, N)
-#
-#   dS = -np.einsum('i,ij,j->i', S, B, I)
-#   dI = -dS - g*I
-#
-#   # return np.array([dS, dI])
-#   # return np.ravel(np.array([dS, dI]))
-#   return sir_SI_to_X(dS,dI)
-#
-# def jac(X, B, g):
-#   N = B.shape[0]
-#   SI = X.reshape((2,N))
-#   S = SI[0]
-#   I = SI[1]
-#
-#   # derivative of f_S
-#   A1 = -  np.diag(np.einsum('ij,j->i', B, I))
-#   A2 = - np.einsum('ij,i->ij', B, S)
-#   A = np.concatenate([A1, A2], axis=1)
-#
-#   # derivative of f_I
-#   B1 = -A1
-#   B2 = -A2 - g*np.eye(N)
-#   B = np.concatenate([B1, B2], axis=1)
-#
-#   return np.concatenate([A,B], axis=0)
-#
+def sir_X_to_SI(X, N):
+  SI = X.reshape((2,N))
+  return SI[0],SI[1]
+
+def sir_SI_to_X(S,I):
+  return np.ravel(np.array([S,I]))
+
+def func_sir_dX(t, X, B, g):
+  """
+  X: S, I
+  B: localization matrix
+  g: inverse recovery time
+  """
+  N = B.shape[0]
+  S,I = sir_X_to_SI(X, N)
+
+  dS = -np.einsum('i,ij,j->i', S, B, I)
+  dI = -dS - g*I
+
+  # return np.array([dS, dI])
+  # return np.ravel(np.array([dS, dI]))
+  return sir_SI_to_X(dS,dI)
+
+def jac(X, B, g):
+  N = B.shape[0]
+  SI = X.reshape((2,N))
+  S = SI[0]
+  I = SI[1]
+
+  # derivative of f_S
+  A1 = -  np.diag(np.einsum('ij,j->i', B, I))
+  A2 = - np.einsum('ij,i->ij', B, S)
+  A = np.concatenate([A1, A2], axis=1)
+
+  # derivative of f_I
+  B1 = -A1
+  B2 = -A2 - g*np.eye(N)
+  B = np.concatenate([B1, B2], axis=1)
+
+  return np.concatenate([A,B], axis=0)
+
 # def compute_sir_X(X, dt, B, g, method_solver, t_eval=None):
 #   if t_eval is None:
 #     t_eval = [0., dt]
@@ -575,38 +589,38 @@ import imageio
 #   Xnew = sol.y[:,1:].T
 #   return Xnew
 #
-# def get_sir_omega_X(X, P):
-#   """
-#   Compute the total fraction of T=I+R individuals from local fractions and local populations
-#   """
-#   N = len(P)
-#   return np.einsum('i,i', 1.-X.reshape(2, N)[0], P)/np.einsum('i->', P)
-#
-# def get_sir_omega_SI(S, I, P):
-#   """
-#   Compute the total fraction of I+R individuals from local fractions and local populations
-#   """
-#   return get_sir_omega_X(sir_SI_to_X(S, I), P)
-#
-# def compute_sir_X(X, dt, B, gamma, method_solver, t_eval=None):
-#   """
-#   Utility function to integrate the SIR dynamics by dt.
-#   """
-#   if t_eval is None:
-#     t_eval = [0., dt]
-#
-#   sol = scipy.integrate.solve_ivp(func_sir_dX, y0=X, t_span=(0,dt), \
-#                                   t_eval=t_eval, vectorized=True, args=(B, gamma), \
-#                                   method=method_solver)
-#
-#   # break conditions
-#   if not (sol.success):
-#     raise ValueError("integration failed!")
-#
-#   Xnew = sol.y[:,-1:].T
-#
-#   return Xnew
-#
+def get_sir_omega_X(X, P):
+  """
+  Compute the total fraction of T=I+R individuals from local fractions and local populations
+  """
+  N = len(P)
+  return np.einsum('i,i', 1.-X.reshape(2, N)[0], P)/np.einsum('i->', P)
+
+def get_sir_omega_SI(S, I, P):
+  """
+  Compute the total fraction of I+R individuals from local fractions and local populations
+  """
+  return get_sir_omega_X(sir_SI_to_X(S, I), P)
+
+def compute_sir_X(X, dt, B, gamma, method_solver, t_eval=None):
+  """
+  Utility function to integrate the SIR dynamics by dt.
+  """
+  if t_eval is None:
+    t_eval = [0., dt]
+
+  sol = scipy.integrate.solve_ivp(func_sir_dX, y0=X, t_span=(0,dt), \
+                                  t_eval=t_eval, vectorized=True, args=(B, gamma), \
+                                  method=method_solver)
+
+  # break conditions
+  if not (sol.success):
+    raise ValueError("integration failed!")
+
+  Xnew = sol.y[:,-1:].T
+
+  return Xnew
+
 # def get_epidemic_size(M, epsilon_i, gamma, itermax=1000, rtol_stop=1.0e-8):
 #   """
 #   Compute the epidemic size given an initial condition epsilon_i and a localization matrix M.
@@ -724,115 +738,115 @@ import imageio
 #
 #   return ts, Ss, Is
 #
-# def fit_sir(times, T_real, gamma, population, store, pathtoloc, tfmt='%Y-%m-%d', method_solver='DOP853', verbose=True, \
-#             b_scale=1):
-#   """
-#   Fit the dynamics of the SIR starting to real data contained in `pathtocssegi`.
-#   The initial condition is taken from the real data.
-#   The method assumes that in the `store` at the indicated `path`, there are entries
-#   in the format %Y-%m-%d that described the localization matrices
-#   for the times `times[:-1]`.
-#   `populations` is the vector with the population per community.
-#
-#   OUTPUT:
-#     * Xs
-#     * ts
-#     * scales
-#
-#   For the output the dumping interval is one day.
-#   """
-#
-#   # initializations
-#   nt = len(times)
-#   t = times[0]
-#   B = read_df(t, tfmt, store, pathtoloc).to_numpy()
-#   N = B.shape[0]
-#   Y_real = np.einsum('ta,a->t', T_real, population) / np.sum(population)
-#
-#   X = np.zeros((2, N), dtype=np.float_)
-#   I = T_real[0]
-#   S = 1 - I
-#   X = sir_SI_to_X(S, I)
-#
-#   y = get_sir_omega_X(X, population)
-#
-#   ts = [t]
-#   Xs = [X.reshape(2,N)]
-#   Ys = [y]
-#   b_scales = []
-#
-#   blo = 0.
-#   # print("nt = ", nt)
-#
-#   for i in range(1, nt):
-#     if verbose:
-#       print(f'Integrating day {t}')
-#     mykey = Path(pathtoloc) / t.strftime(tfmt)
-#     mykey = str(mykey)
-#     if mykey in store.keys():
-#       B = read_df(t, tfmt, store, pathtoloc).to_numpy()
-#     elif verbose:
-#       print("Localization matrix not updated!")
-#
-#     tnew = times[i]
-#     dt = int((tnew - t).days)
-#     ypred = Y_real[i]
-#
-#     # root finding method
-#     func_root = lambda b: get_sir_omega_X(compute_sir_X(X, dt, b*B, gamma, method_solver), \
-#                                           population) - ypred
-#
-#     # initial bracketing
-#     bhi = b_scale
-#     fscale = 3.
-#     for k in range(1,10):
-#       f = func_root(bhi)
-#       if f > 0:
-#         break
-#       else:
-#         bhi *= fscale
-#     if f < 0:
-#       raise ValueError("Problem in bracketing!")
-#
-#     # find the root
-#     sol = scipy.optimize.root_scalar(func_root, bracket=(blo, bhi), method='brentq', \
-#                                       options={'maxiter': 100})
-#     if not (sol.converged):
-#       raise ValueError("root finding failed!")
-#     b_scale = sol.root
-#
-#     # compute next state with optimal scale
-#     t_eval = np.arange(dt+1)
-#     Xnews = compute_sir_X(X, dt, b_scale*B, gamma, method_solver, t_eval=t_eval)
-#     Xnew = Xnews[-1]
-#     y = get_sir_omega_X(Xnew,population)
-#     print(f"b = {b_scale}, y = {y}, ypred = {ypred}, y-ypred = {y-ypred}")
-#
-#     # dump
-#     # data.append(Xnew.reshape(2,N))
-#     Xs += [Xnew.reshape(2,N) for Xnew in Xnews]
-#     ts += [t + datetime.timedelta(days=int(dt)) for dt in t_eval[1:]]
-#     Ys.append(y)
-#     b_scales.append(b_scale)
-#
-#     # update
-#     t = tnew
-#     X = Xnew
-#
-#   b_scales.append(None)  # B has ndays-1 entries
-#   print("Fitting complete")
-#
-#   # prepare export of results
-#   S = np.array([X[0] for X in Xs])
-#   I = np.array([X[1] for X in Xs])
-#   clusters = np.arange(N, dtype=np.uint)
-#   df_S = pd.DataFrame(data=S, index=ts, columns=clusters)
-#   df_I = pd.DataFrame(data=I, index=ts, columns=clusters)
-#   df_fit = pd.DataFrame(data=np.array([b_scales, Ys]).T, index=times, columns=["localization_scale", "frac_infected_tot"])
-#
-#   return df_S, df_I, df_fit
-#
-#
+def fit_sir(times, T_real, gamma, population, store, pathtoloc, tfmt='%Y-%m-%d', method_solver='DOP853', verbose=True, \
+            b_scale=1):
+  """
+  Fit the dynamics of the SIR starting from real data contained in `pathtocssegi`.
+  The initial condition is taken from the real data.
+  The method assumes that in the `store` at the indicated `path`, there are entries
+  in the format %Y-%m-%d that described the infectivity matrices
+  for the times `times[:-1]`.
+  `populations` is the vector with the population per community.
+
+  OUTPUT:
+    * Xs
+    * ts
+    * scales
+
+  For the output the dumping interval is one day.
+  """
+
+  # initializations
+  nt = len(times)
+  t = times[0]
+  B = read_df(t, tfmt, store, pathtoloc).to_numpy()
+  N = B.shape[0]
+  Y_real = np.einsum('ta,a->t', T_real, population) / np.sum(population)
+
+  X = np.zeros((2, N), dtype=np.float_)
+  I = T_real[0]
+  S = 1 - I
+  X = sir_SI_to_X(S, I)
+
+  y = get_sir_omega_X(X, population)
+
+  ts = [t]
+  Xs = [X.reshape(2,N)]
+  Ys = [y]
+  b_scales = []
+
+  blo = 0.
+  # print("nt = ", nt)
+
+  for i in range(1, nt):
+    if verbose:
+      print(f'Integrating day {t}')
+    mykey = Path(pathtoloc) / t.strftime(tfmt)
+    mykey = str(mykey)
+    if mykey in store.keys():
+      B = read_df(t, tfmt, store, pathtoloc).to_numpy()
+    elif verbose:
+      print("Infectivity matrix not updated!")
+
+    tnew = times[i]
+    dt = int((tnew - t).days)
+    ypred = Y_real[i]
+
+    # root finding method
+    func_root = lambda b: get_sir_omega_X(compute_sir_X(X, dt, b*B, gamma, method_solver), \
+                                          population) - ypred
+
+    # initial bracketing
+    bhi = b_scale
+    fscale = 3.
+    for k in range(1,10):
+      f = func_root(bhi)
+      if f > 0:
+        break
+      else:
+        bhi *= fscale
+    if f < 0:
+      raise ValueError("Problem in bracketing!")
+
+    # find the root
+    sol = scipy.optimize.root_scalar(func_root, bracket=(blo, bhi), method='brentq', \
+                                      options={'maxiter': 100})
+    if not (sol.converged):
+      raise ValueError("root finding failed!")
+    b_scale = sol.root
+
+    # compute next state with optimal scale
+    t_eval = np.arange(dt+1)
+    Xnews = compute_sir_X(X, dt, b_scale*B, gamma, method_solver, t_eval=t_eval)
+    Xnew = Xnews[-1]
+    y = get_sir_omega_X(Xnew,population)
+    print(f"b = {b_scale}, y = {y}, ypred = {ypred}, y-ypred = {y-ypred}")
+
+    # dump
+    # data.append(Xnew.reshape(2,N))
+    Xs += [Xnew.reshape(2,N) for Xnew in Xnews]
+    ts += [t + datetime.timedelta(days=int(dt)) for dt in t_eval[1:]]
+    Ys.append(y)
+    b_scales.append(b_scale)
+
+    # update
+    t = tnew
+    X = Xnew
+
+  b_scales.append(None)  # B has ndays-1 entries
+  print("Fitting complete")
+
+  # prepare export of results
+  S = np.array([X[0] for X in Xs])
+  I = np.array([X[1] for X in Xs])
+  clusters = np.arange(N, dtype=np.uint)
+  df_S = pd.DataFrame(data=S, index=ts, columns=clusters)
+  df_I = pd.DataFrame(data=I, index=ts, columns=clusters)
+  df_fit = pd.DataFrame(data=np.array([b_scales, Ys]).T, index=times, columns=["scale", "frac_infected_tot"])
+
+  return df_S, df_I, df_fit
+
+
 # def fit_sir_test(times, T_real, gamma, population, store, pathtoloc, tfmt='%Y-%m-%d', method_solver='DOP853', verbose=True, \
 #             b_scale=1, index=None):
 #   """
@@ -1139,7 +1153,7 @@ import imageio
 #   mykey = str(mykey)
 #   if mykey in store.keys():
 #     F = read_df(t, tfmt, store, pathtomat).to_numpy()
-#     B = get_localization_matrix(F)
+#     B = get_infectivity_matrix(F)
 #   elif verbose:
 #     print("Localization matrix not updated!")
 #
@@ -1183,7 +1197,7 @@ import imageio
 #   print(f"b = {b_scale}, y = {y}, ypred = {ypred}, y-ypred = {y-ypred}")
 #
 #   def func_min(V):
-#     B = get_localization_matrix_vscale(F,V)
+#     B = get_infectivity_matrix_vscale(F,V)
 #     X_new = compute_sir_X(X, dt, B, gamma, method_solver)
 #     S_new, I_new = X_new.reshape(2, N)
 #     T_new = 1. - S_new
@@ -1209,7 +1223,7 @@ import imageio
 #     """
 #     Return the jacobian of the matrix to minimize
 #     """
-#     B = get_localization_matrix_vscale(F,V)
+#     B = get_infectivity_matrix_vscale(F,V)
 #     S, I = X.reshape(2, N)
 #     X_new = compute_sir_X(X, dt, B, gamma, method_solver)
 #     S_new, I_new = X_new.reshape(2, N)
@@ -1262,7 +1276,7 @@ import imageio
 #   #   YY.append(f)
 #   #
 #   # TEST
-#   # B = get_localization_matrix_vscale(F,V)
+#   # B = get_infectivity_matrix_vscale(F,V)
 #   # S, I = X.reshape(2, N)
 #   # X_new = compute_sir_X(X, dt, B, gamma, method_solver)
 #   # S_new, I_new = X_new.reshape(2, N)
@@ -1330,7 +1344,7 @@ import imageio
 #   # Vnew = sol.x
 #
 #   # compute solution at optimum
-#   B = get_localization_matrix_vscale(F,Vnew)
+#   B = get_infectivity_matrix_vscale(F,Vnew)
 #   t_eval = np.arange(dt+1)
 #   Xnews = compute_sir_X(X, dt, B, gamma, method_solver, t_eval=t_eval)
 #   Xnew = Xnews[-1]
@@ -1361,7 +1375,7 @@ import imageio
 #     mykey = str(mykey)
 #     if mykey in store.keys():
 #       F = read_df(t, tfmt, store, pathtomat).to_numpy()
-#       B = get_localization_matrix(F)
+#       B = get_infectivity_matrix(F)
 #     elif verbose:
 #       print("Localization matrix not updated!")
 #
@@ -1369,7 +1383,7 @@ import imageio
 #     dt = int((tnew - t).days)
 #
 #     def func_min(V):
-#       B = get_localization_matrix_vscale(F,V)
+#       B = get_infectivity_matrix_vscale(F,V)
 #       X_new = compute_sir_X(X, dt, B, gamma, method_solver)
 #       S_new, I_new = X_new.reshape(2, N)
 #       T_new = 1. - S_new
@@ -1395,7 +1409,7 @@ import imageio
 #       """
 #       Return the jacobian of the matrix to minimize
 #       """
-#       B = get_localization_matrix_vscale(F,V)
+#       B = get_infectivity_matrix_vscale(F,V)
 #       S, I = X.reshape(2, N)
 #       X_new = compute_sir_X(X, dt, B, gamma, method_solver)
 #       S_new, I_new = X_new.reshape(2, N)
@@ -1438,7 +1452,7 @@ import imageio
 #         method=method, bounds=bounds)
 #     Vnew = sol.x
 #
-#     B = get_localization_matrix_vscale(F,Vnew)
+#     B = get_infectivity_matrix_vscale(F,Vnew)
 #     t_eval = np.arange(dt+1)
 #     Xnews = compute_sir_X(X, dt, B, gamma, method_solver, t_eval=t_eval)
 #     Xnew = Xnews[-1]
@@ -1705,124 +1719,124 @@ def show_image(mat_, downscale=None, log=False, mpl=False, vmin=None, vmax=None,
 #   print("Written file {:s}.".format(str(fileout)))
 #   return
 #
-# def plot_omega_profile(Omegas, times, labels=None, colors=None, styles=None, fileout=Path('./animation.gif'), tpdir=Path('.'), \
-#                        dpi=150, lw=0.5, ms=2, idump=10, \
-#                        ymin=None, ymax=None, figsize=(4,3), fps=5, \
-#                        log=True, xlabel='community', ylabel="$\Omega_a$", lgd_ncol=2, deletetp=True, exts=['.png'], \
-#                        tfmt = "%Y-%m-%d"):
-#   """
-#   Save an animated image series (GIF) or movie (MP4), depending on the extension provided,
-#   representing the dynamics of local epidemic sizes
-#   See this tutorial on how to make animated movies:
-#     https://matplotlib.org/stable/api/animation_api.html
-#   INPUT:
-#     * Omegas: list of table containing omegas (indices t,a)
-#     * times: list of times (indices t)
-#   """
-#   # tp dir
-#   if not tpdir.is_dir():
-#     tpdir.mkdir(exist_ok=True)
-#   for ext in exts:
-#     for f in tpdir.glob('*' + ext): f.unlink()
-#
-#   # parameters
-#   nseries = Omegas.shape[0]
-#   nt = len(times)
-#   if (Omegas.shape[1] != nt):
-#     raise ValueError("Omegas must have same second dimension as times!")
-#   N = Omegas.shape[2]
-#
-#   haslabels=True
-#   if labels is None:
-#     haslabels=False
-#     labels = [None]*nseries
-#
-#   if colors is None:
-#     colors = [None]*nseries
-#
-#   if styles is None:
-#     styles = [None]*nseries
-#   for k in range(nseries):
-#     if styles[k] is None:
-#       styles[k] = 'o'
-#
-#   num = int(np.ceil(np.log10(nt)))
-#   if float(nt) == float(10**num):
-#     num += 1
-#   # fmt = "{" + ":0{:d}".format(num) + "}"
-#
-#   # determine minimum and maximum
-#   idx = Omegas[:,0,:] > 0.
-#   if ymin is None:
-#     ymin = 10**(np.floor(np.log10(np.min(Omegas[:,0,:][idx]))))    # closest power of 10
-#   if ymax is None:
-#     ymax = 10**(np.ceil(np.log10(np.max(Omegas))))    # closest power of 10
-#   print("ymin = {:.2e}".format(ymin), "ymax = {:.2e}".format(ymax))
-#
-#   if not ".png" in exts:
-#     raise ValueError("PNG format must be given")
-#
-#   # community index
-#   X = np.arange(N, dtype=np.uint)
-#
-#   # prepare figure
-#   filenames=[]
-#   for i in range(nt):
-#     ## update time and Omega
-#     t = times[i]
-#
-#     ## create figure
-#     fig = plt.figure(figsize=figsize, dpi=dpi)
-#     ax = fig.gca()
-#
-#     date = t.strftime('%Y-%m-%d')
-#     title = "{:s}".format(date)
-#     ax.set_title(title, fontsize="large")
-#
-#     for k in range(nseries):
-#       Y = Omegas[k, i]
-#       color=colors[k]
-#       label=labels[k]
-#       style=styles[k]
-#       ax.plot(X, Y, style, lw=lw, mew=0, ms=ms, color=color, label=label)
-#
-#     ax.set_xlim(X[0], X[-1])
-#     ax.set_ylim(ymin,ymax)
-#     ax.set_xlabel(xlabel, fontsize='medium')
-#     ax.set_ylabel(ylabel, fontsize='large')
-#     if log:
-#       ax.set_yscale('log')
-#     ax.spines['right'].set_visible(False)
-#     ax.spines['top'].set_visible(False)
-#     ax.tick_params(length=4)
-#
-#     if haslabels:
-#       ax.legend(loc='lower left', fontsize='medium', frameon=False, ncol=lgd_ncol)
-#
-#     fname = str(tpdir / t.strftime(tfmt))
-#     # fname = str(tpdir / fmt.format(i))
-#     for ext in exts:
-#       fpath = fname + ext
-#       fig.savefig(fpath, dpi=dpi, bbox_inches='tight', pad_inches=0)
-#     fpath = fname + ".png"
-#     filenames.append(fpath)
-#
-#     if (i %idump == 0):
-#       print(f"Written file {fpath}.")
-#
-#     fig.clf()
-#     plt.close('all')
-#
-#   # write movie
-#   imageio.mimsave(fileout, [imageio.imread(f) for f in filenames], fps=fps)
-#   print(f"Written file {fileout}.")
-#
-#   # clean tpdir
-#   if deletetp:
-#     shutil.rmtree(tpdir)
-#
-#   return
-#
+def plot_omega_profile(Omegas, times, labels=None, colors=None, styles=None, fileout=Path('./animation.gif'), tpdir=Path('.'), \
+                       dpi=150, lw=0.5, ms=2, idump=10, \
+                       ymin=None, ymax=None, figsize=(4,3), fps=5, \
+                       log=True, xlabel='community', ylabel="$\Omega_a$", lgd_ncol=2, deletetp=True, exts=['.png'], \
+                       tfmt = "%Y-%m-%d"):
+  """
+  Save an animated image series (GIF) or movie (MP4), depending on the extension provided,
+  representing the dynamics of local epidemic sizes
+  See this tutorial on how to make animated movies:
+    https://matplotlib.org/stable/api/animation_api.html
+  INPUT:
+    * Omegas: list of table containing omegas (indices t,a)
+    * times: list of times (indices t)
+  """
+  # tp dir
+  if not tpdir.is_dir():
+    tpdir.mkdir(exist_ok=True)
+  for ext in exts:
+    for f in tpdir.glob('*' + ext): f.unlink()
+
+  # parameters
+  nseries = Omegas.shape[0]
+  nt = len(times)
+  if (Omegas.shape[1] != nt):
+    raise ValueError("Omegas must have same second dimension as times!")
+  N = Omegas.shape[2]
+
+  haslabels=True
+  if labels is None:
+    haslabels=False
+    labels = [None]*nseries
+
+  if colors is None:
+    colors = [None]*nseries
+
+  if styles is None:
+    styles = [None]*nseries
+  for k in range(nseries):
+    if styles[k] is None:
+      styles[k] = 'o'
+
+  num = int(np.ceil(np.log10(nt)))
+  if float(nt) == float(10**num):
+    num += 1
+  # fmt = "{" + ":0{:d}".format(num) + "}"
+
+  # determine minimum and maximum
+  idx = Omegas[:,0,:] > 0.
+  if ymin is None:
+    ymin = 10**(np.floor(np.log10(np.min(Omegas[:,0,:][idx]))))    # closest power of 10
+  if ymax is None:
+    ymax = 10**(np.ceil(np.log10(np.max(Omegas))))    # closest power of 10
+  print("ymin = {:.2e}".format(ymin), "ymax = {:.2e}".format(ymax))
+
+  if not ".png" in exts:
+    raise ValueError("PNG format must be given")
+
+  # community index
+  X = np.arange(N, dtype=np.uint)
+
+  # prepare figure
+  filenames=[]
+  for i in range(nt):
+    ## update time and Omega
+    t = times[i]
+
+    ## create figure
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    ax = fig.gca()
+
+    date = t.strftime('%Y-%m-%d')
+    title = "{:s}".format(date)
+    ax.set_title(title, fontsize="large")
+
+    for k in range(nseries):
+      Y = Omegas[k, i]
+      color=colors[k]
+      label=labels[k]
+      style=styles[k]
+      ax.plot(X, Y, style, lw=lw, mew=0, ms=ms, color=color, label=label)
+
+    ax.set_xlim(X[0], X[-1])
+    ax.set_ylim(ymin,ymax)
+    ax.set_xlabel(xlabel, fontsize='medium')
+    ax.set_ylabel(ylabel, fontsize='large')
+    if log:
+      ax.set_yscale('log')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.tick_params(length=4)
+
+    if haslabels:
+      ax.legend(loc='lower left', fontsize='medium', frameon=False, ncol=lgd_ncol)
+
+    fname = str(tpdir / t.strftime(tfmt))
+    # fname = str(tpdir / fmt.format(i))
+    for ext in exts:
+      fpath = fname + ext
+      fig.savefig(fpath, dpi=dpi, bbox_inches='tight', pad_inches=0)
+    fpath = fname + ".png"
+    filenames.append(fpath)
+
+    if (i %idump == 0):
+      print(f"Written file {fpath}.")
+
+    fig.clf()
+    plt.close('all')
+
+  # write movie
+  imageio.mimsave(fileout, [imageio.imread(f) for f in filenames], fps=fps)
+  print(f"Written file {fileout}.")
+
+  # clean tpdir
+  if deletetp:
+    shutil.rmtree(tpdir)
+
+  return
+
 # def plot_omega_profile_two(Y1, Y2, times, labels=None, colors=None, fileout=Path('./animation.gif'), tpdir=Path('.'), \
 #                        dpi=150, lw=0.5, ms=2, idump=10, \
 #                        ymin=None, ymax=None, figsize=(4,3), fps=5, \
@@ -1940,136 +1954,137 @@ def show_image(mat_, downscale=None, log=False, mpl=False, vmin=None, vmax=None,
 #
 #   return
 #
-# def plot_omega_map(Omega, times, XY, fileout=Path('./animation.gif'), tpdir=Path('.'), dpi=150, \
-#                    vmin=None, vmax=None, figsize=(4,3), nframes=None, fps=5, \
-#                    cmap=cm.magma_r, idump=1, tfmt = "%Y-%m-%d", ymin=None, ymax=None, \
-#                    clabel='$\Omega$', deletetp=True, exts=['.png'], \
-#                    circle_size=0.4, lw=0.1, edges=[], edge_width=0.5):
-#   """
-#   Save an animated image series (GIF) or movie (MP4), depending on the extension provided,
-#   representing the dynamics of local epidemic sizes
-#
-#   INPUT:
-#     * df_tolls: list of dataframes
-#     * XY: 2xN array giving the coordinates of the N communities.
-#     *
-#   """
-#   from matplotlib.path import Path
-#   # tp dir
-#   if not tpdir.is_dir():
-#     tpdir.mkdir(exist_ok=True)
-#   for ext in exts:
-#     for f in tpdir.glob('*' + ext): f.unlink()
-#
-#   # parameters
-#   nt = len(times)
-#   if (Omega.shape[0] != nt):
-#     raise ValueError("Omega must have same second dimension as times!")
-#   N = Omega.shape[1]
-#
-#   num = int(np.ceil(np.log10(nt)))
-#   if float(nt) == float(10**num):
-#     num += 1
-#   fmt = "{" + ":0{:d}".format(num) + "}"
-#
-#   # color scale
-#   # determine minimum and maximum
-#   idx = Omega[0,:] > 0.
-#   if vmin is None:
-#     vmin = 10**(np.floor(np.log10(np.min(Omega[0,:][idx]))))    # closest power of 10
-#   if vmax is None:
-#     vmax = 10**(np.ceil(np.log10(np.max(Omega))))    # closest power of 10
-#   print("vmin = {:.2e}".format(vmin), "vmax = {:.2e}".format(vmax))
-#   norm = mco.LogNorm(vmin=vmin, vmax=vmax)
-#
-#   # clusters
-#   X, Y = XY
-#   xmin = np.min(X)
-#   xmax = np.max(X)
-#   if ymin is None:
-#     ymin = np.min(Y)
-#   if ymax is None:
-#     ymax = np.max(Y)
-#
-#   # prepare figure
-#   filenames=[]
-#   for i in range(nt):
-#     if (i %idump != 0):
-#       continue
-#     ## update time and Omega
-#     t = times[i]
-#
-#     ## create figure
-#     fig = plt.figure(figsize=figsize, dpi=dpi)
-#     ax = fig.gca()
-#
-#     date = t.strftime('%Y-%m-%d')
-#     title = "{:s}".format(date)
-#     ax.set_title(title, fontsize="large")
-#
-#     # draw edges
-#     if len(edges) > 0:
-#       for a1,a2 in edges:
-#         x1 = X[a1]
-#         y1 = Y[a1]
-#         x2 = X[a2]
-#         y2 = Y[a2]
-#         # ax.plot([x1,x2], [y1,y2], 'k-', lw=edge_width)
-#         verts = [ (x1, y1), (x2, y2)]
-#         codes = [Path.MOVETO, Path.LINETO]
-#         path = Path(verts, codes)
-#         patch = mpatches.PathPatch(path, facecolor='none', edgecolor='k', lw=edge_width)
-#         res = ax.add_patch(patch)
-#
-#     # draw spheres
-#     Ns = np.arange(N)
-#     idx = np.argsort(Omega[i])
-#     # for a in range(N):
-#     for a in Ns[idx]:
-#       x = X[a]
-#       y = Y[a]
-#       val = Omega[i,a]
-#       if (val < vmin):
-#         color = [1.,1.,1.,1.]
-#       elif (val > vmax):
-#         color = [0.,0.,0.,1.]
-#       else:
-#         color = cmap(norm(val))
-#       circle = plt.Circle((x,y), circle_size, color=color, alpha=1, lw=lw, ec='black')
-#       res = ax.add_patch(circle)
-#
-#     # formatting
-#     for lab in 'left', 'right', 'bottom', 'top':
-#       ax.spines[lab].set_visible(False)
-#     ax.tick_params(bottom=False, left=False, labelbottom=False, labelleft=False)
-#     cax = fig.add_axes(rect=[0.98,0.1,0.02,0.7])
-#     plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax, label=clabel, extendfrac='auto')
-#     ax.set_xlim(xmin, xmax)
-#     ax.set_ylim(ymin, ymax)
-#     ax.set_aspect('equal')
-#
-#     # write figure
-#     fname = str(tpdir / t.strftime(tfmt))
-#     for ext in exts:
-#       fpath = fname + ext
-#       fig.savefig(fpath, dpi=dpi, bbox_inches='tight', pad_inches=0)
-#     fpath = fname + ".png"
-#     filenames.append(fpath)
-#
-#     print(f"Written file {fpath}.")
-#
-#     fig.clf()
-#     plt.close('all')
-#
-#   # write movie
-#   imageio.mimsave(fileout, [imageio.imread(f) for f in filenames], fps=fps)
-#   print(f"Written file {fileout}.")
-#
-#   # clean tpdir
-#   if deletetp:
-#     shutil.rmtree(tpdir)
-#
-#   return
+def plot_omega_map(Omega, times, XY, fileout=Path('./animation.gif'), tpdir=Path('.'), dpi=150, \
+                   vmin=None, vmax=None, figsize=(4,3), nframes=None, fps=5, \
+                   cmap=cm.magma_r, idump=1, tfmt = "%Y-%m-%d", ymin=None, ymax=None, \
+                   clabel='$\Omega$', deletetp=True, exts=['.png'], \
+                   circle_size=0.4, lw=0.1, edges=[], edge_width=0.5):
+  """
+  Save an animated image series (GIF) or movie (MP4), depending on the extension provided,
+  representing the dynamics of local epidemic sizes
+
+  INPUT:
+    * df_tolls: list of dataframes
+    * XY: 2xN array giving the coordinates of the N communities.
+    *
+  """
+  from matplotlib.path import Path
+  # tp dir
+  if not tpdir.is_dir():
+    tpdir.mkdir(exist_ok=True)
+  for ext in exts:
+    for f in tpdir.glob('*' + ext): f.unlink()
+
+  # parameters
+  nt = len(times)
+  if (Omega.shape[0] != nt):
+    raise ValueError("Omega must have same second dimension as times!")
+  N = Omega.shape[1]
+
+  num = int(np.ceil(np.log10(nt)))
+  if float(nt) == float(10**num):
+    num += 1
+  fmt = "{" + ":0{:d}".format(num) + "}"
+
+  # color scale
+  # determine minimum and maximum
+  idx = Omega[0,:] > 0.
+  if vmin is None:
+    vmin = 10**(np.floor(np.log10(np.min(Omega[0,:][idx]))))    # closest power of 10
+  if vmax is None:
+    vmax = 10**(np.ceil(np.log10(np.max(Omega))))    # closest power of 10
+  print("vmin = {:.2e}".format(vmin), "vmax = {:.2e}".format(vmax))
+  norm = mco.LogNorm(vmin=vmin, vmax=vmax)
+
+  # clusters
+  X, Y = XY
+  xmin = np.min(X)
+  xmax = np.max(X)
+  if ymin is None:
+    ymin = np.min(Y)
+  if ymax is None:
+    ymax = np.max(Y)
+
+  # prepare figure
+  filenames=[]
+  for i in range(nt):
+    if (i %idump != 0):
+      continue
+    ## update time and Omega
+    t = times[i]
+
+    ## create figure
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    ax = fig.gca()
+
+    date = t.strftime('%Y-%m-%d')
+    title = "{:s}".format(date)
+    ax.set_title(title, fontsize="large")
+
+    # draw edges
+    if len(edges) > 0:
+      for a1,a2 in edges:
+        x1 = X[a1]
+        y1 = Y[a1]
+        x2 = X[a2]
+        y2 = Y[a2]
+        # ax.plot([x1,x2], [y1,y2], 'k-', lw=edge_width)
+        verts = [ (x1, y1), (x2, y2)]
+        codes = [Path.MOVETO, Path.LINETO]
+        path = Path(verts, codes)
+        patch = mpatches.PathPatch(path, facecolor='none', edgecolor='k', lw=edge_width)
+        res = ax.add_patch(patch)
+
+    # draw spheres
+    Ns = np.arange(N)
+    idx = np.argsort(Omega[i])
+    # for a in range(N):
+    for a in Ns[idx]:
+      x = X[a]
+      y = Y[a]
+      val = Omega[i,a]
+      if (val < vmin):
+        color = [1.,1.,1.,1.]
+      elif (val > vmax):
+        color = [0.,0.,0.,1.]
+      else:
+        color = cmap(norm(val))
+      circle = plt.Circle((x,y), circle_size, color=color, alpha=1, lw=lw, ec='black')
+      res = ax.add_patch(circle)
+
+    # formatting
+    for lab in 'left', 'right', 'bottom', 'top':
+      ax.spines[lab].set_visible(False)
+    ax.tick_params(bottom=False, left=False, labelbottom=False, labelleft=False)
+    cax = fig.add_axes(rect=[0.98,0.1,0.02,0.7])
+    plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax, label=clabel, extendfrac='auto')
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    ax.set_aspect('equal')
+
+    # write figure
+    fname = str(tpdir / t.strftime(tfmt))
+    for ext in exts:
+      fpath = fname + ext
+      fig.savefig(fpath, dpi=dpi, bbox_inches='tight', pad_inches=0)
+    fpath = fname + ".png"
+    filenames.append(fpath)
+
+    print(f"Written file {fpath}.")
+
+    fig.clf()
+    plt.close('all')
+
+  # write movie
+  imageio.mimsave(fileout, [imageio.imread(f) for f in filenames], fps=fps)
+  print(f"Written file {fileout}.")
+
+  # clean tpdir
+  if deletetp:
+    shutil.rmtree(tpdir)
+
+  return
+
 # def plot_omega_map_old(df_toll, XY, labels=None, fileout=Path('./animation.gif'), tpdir=Path('.'), dpi=150, vmin=None, vmax=None, figsize=(4,3), nframes=None, fps=5, \
 #                    cmap=cm.magma_r, idump=1):
 #   """
