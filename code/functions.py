@@ -68,15 +68,15 @@ import imageio
 #
 #     return edges
 #
-# def get_binned(X, Y, edges):
-#     nbins = len(edges)-1
-#     digitized = np.digitize(X,edges)
-#     Y_subs = [None for n in range(nbins)]
-#     for i in range(1, nbins+1):
-#         Y_subs[i-1] = np.array(Y[digitized == i])
-#
-#     return Y_subs
-#
+def get_binned(X, Y, edges):
+    nbins = len(edges)-1
+    digitized = np.digitize(X,edges)
+    Y_subs = [None for n in range(nbins)]
+    for i in range(1, nbins+1):
+        Y_subs[i-1] = np.array(Y[digitized == i])
+
+    return Y_subs
+
 # def get_array_module(a):
 #   """
 #   Return the module of an array a
@@ -99,6 +99,57 @@ def geo_dist(M1, M2):
     dl = (l1-l2)*np.pi/180.
     pbar = 0.5*(p1+p2)*np.pi/180.
     return np.sqrt(dp**2+np.cos(pbar)*dl**2)
+
+def unfold_positive(E, n=2**5, deg=12, nbins=2**6):
+  """
+  Based on: https://www.mathworks.com/matlabcentral/fileexchange/24122-unfoldingpositive
+
+  INPUT:
+    E: matrix of size nsamples x N
+    n: integer (typical value 10 to 40)
+    deg: integer (typical value 7 to 15)
+    nbins: integer (typical value 40 to 80)
+  OUTPUT:
+    X: centers of bins
+    Y: histogram of nearest-neighbor differences (unfolded)
+
+  This code unfolds a positive sequence of 'N' eigenvalues for 'nsamples'
+  matrix samples through polynomial fitting of the cumulative
+  distribution.
+  The fitting polynomial has degree 'deg'.
+  The code takes as input a matrix E of size (nsamples x N) where row j
+  contains the N positive eigenvalues of the j-th sample, and a number
+  'n' of points between 0 and Ymax=max(max(E)).
+  The cumulative distribution is computed over the 'n' points in the
+  vector YR as the fraction of eigenvalues lying below YR(j) and stored
+  in the vector CumDist.
+  Then a polynomial fitting is performed over the cumulative density
+  profile obtained in this way, and the resulting polynomial is then
+  computed on all the entries of E (---> xiMatr1).
+  The nearest-neighbor difference between the unfolded eigenvalues in xiMatr1 is then computed,
+  and produces a normalized histogram Y with 'nbins' (number of bins) centered at X,
+  ready to be plotted.
+
+  """
+  from numpy.polynomial import Polynomial
+
+  nsamp = E.shape[0]
+  N = E.shape[1]
+
+  ymax = np.max(np.ravel(E))
+  Yr = np.linspace(0,ymax,n)
+
+  # compute cumulative distribution
+  Z = (1./float(nsamp)/float(N)) * np.array([ np.sum(np.int_(E < y)) for y in Yr], dtype=np.float_)
+
+  # theta = np.polyfit(Yr, Z, deg)
+  # p = np.poly1d(theta)
+  p = Polynomial.fit(Yr, Z, deg)
+  FitDist = p(Yr)
+  xiMatr1 = p(E)
+
+  d = np.ravel(np.diff(xiMatr1, axis=1))
+  return np.histogram(d,bins=nbins,density=True)
 
 #==============================================================================
 # modelling
@@ -704,13 +755,38 @@ def wave_front_get_ode_sol(C, D=0, p0=-0.99, tmin=0, tmax=1000, npts=1000, t_eva
 #
 #     return Dx + Dy
 #
+# def laplacian_discrete_slow(X):
+#     '''
+#     Compute discrete Laplacian with Dirichlet boundary conditions along axis 0 and periodic boundary conditions along axis 1.
+#     Give same result as `laplacian_discrete`
+#     '''
+#     xp = cp.get_array_module(X)
+#     N,M = X.shape
+#
+#     Dx = xp.zeros((N,M))
+#     Dy = xp.zeros((N,M))
+#
+#     Dx[1:-1] = X[:-2] + X[2:] - 2*X[1:-1]
+#     Dy[:, 1:-1] = X[:, :-2] + X[:, 2:] - 2*X[:, 1:-1]
+#
+#     # Dirichlet boundary condition
+#     Dx[0] = X[1] - 2*X[0]
+#     Dx[-1] = X[-2] - 2*X[-1]
+#
+#     # periodic boundary condition
+#     Dy[:,0] = X[:,-1] + X[:,1] - 2*X[:,0]
+#     Dy[:,-1] = X[:,-2] + X[:,0] - 2*X[:,-1]
+#
+#     return Dx+Dy
+#
 # def laplacian_discrete_conv(X, kernel_=np.array([[0, 1, 0],[1, -4, 1], [0, 1, 0]])):
 #     """
 #     Compute the discrete laplacian of the matrix X such that:
 #       * there are dirichlet boundary conditions along the first axis
 #       * there are periodic boundary conditions along the second axis
 #
-#       The 7-pt stencil would be [[1, 2, 1], [2,-12,2], [1,2,1]]/12
+#     The 9-pt stencil would be [[1, 2, 1], [2,-12,2], [1,2,1]]/4
+#     Give same result as `laplacian_discrete` when using the 5-pt stencil.
 #     """
 #     xp = cp.get_array_module(X)
 #     kernel = xp.array(kernel_)
