@@ -39,35 +39,6 @@ import imageio
 #==============================================================================
 # helpers methods
 #==============================================================================
-# def histogram(X,density=True):
-#     valmax = np.max(X)
-#     valmin = np.min(X)
-#     iqrval = sst.iqr(X)
-#     nbins_fd = (valmax-valmin)*np.float_(len(X))**(1./3)/(2.*iqrval)
-#     if (nbins_fd < 1.0e4):
-#         return np.histogram(X,bins='auto',density=density)
-#     else:
-#         print("Using 'sturges' method!")
-#         return np.histogram(X,bins='sturges',density=density)
-#
-# def make_binning_edges(X, x0=None, x1=None, binw=None):
-#     if x0 is None:
-#         x0 = np.min(X)
-#     if x1 is None:
-#         x1 = np.max(X)
-#
-#     nx = len(X)
-#     if binw is None:
-#         nbins = np.ceil(np.sqrt(nx))
-#         binw = (x1-x0)/nbins
-#
-#     nbins = float(x1-x0)/binw
-#     nbins = int(np.ceil(nbins))
-#     x1 = x0 + nbins*binw
-#     edges = np.arange(nbins+1)*binw + x0
-#
-#     return edges
-#
 def get_binned(X, Y, edges):
     nbins = len(edges)-1
     digitized = np.digitize(X,edges)
@@ -77,14 +48,14 @@ def get_binned(X, Y, edges):
 
     return Y_subs
 
-# def get_array_module(a):
-#   """
-#   Return the module of an array a
-#   """
-#   if cp:
-#     return cp.get_array_module(a)
-#   else:
-#     return np
+def get_array_module(a):
+  """
+  Return the module of an array a
+  """
+  if cp:
+    return cp.get_array_module(a)
+  else:
+    return np
 
 def geo_dist(M1, M2):
     """
@@ -168,6 +139,16 @@ def fsigmoid_jac(x, *params):
     grad[3] = -(x-b)*np.exp(d*(x-b)) * a /(1.0 + np.exp(d*(x-b)))**2
     return grad.T
 
+def framp(x, a, b, c):
+    return c*np.logaddexp(0, a*(x-b))
+
+def framp_jac(x, a, b, c):
+    g = np.exp(-a*(x-b))
+    J1 = (x-b)*c/(1.+g)
+    J2 = -a*c/(1.+g)
+    J3 = np.logaddexp(0, a*(x-b))
+    return np.array([J1, J2, J3]).T
+
 ########## Utils ##########
 def read_df(t, tfmt, store, path):
   """
@@ -178,28 +159,6 @@ def read_df(t, tfmt, store, path):
   df = store[str(key)]
   return df
 
-# def get_population(clusters):
-#   return clusters['population'].to_numpy().astype('int64')
-#
-# def get_infectivity_matrix_old(F):
-#   """
-#   Return the infectivity matrix from the input flux matrix
-#   """
-#   N = F.shape[0]
-#   if (F.shape[1] != N):
-#     raise ValueError
-#
-#   pvec = F.diagonal()
-#   pinv = np.zeros(N, dtype=np.float_)
-#   idx = pvec > 0.
-#   pinv[idx] = 1./pvec[idx]
-#
-#   B = np.zeros((N,N), dtype=np.float_)
-#   B = F + F.T
-#   np.fill_diagonal(B, pvec)
-#   B = np.einsum('ij,j,i->ij', B, pinv, pinv)
-#   return B
-#
 def get_infectivity_matrix(F):
   """
   Return the infectivity matrix from the input flux matrix
@@ -228,8 +187,13 @@ def sir_X_to_SI(X, N):
   SI = X.reshape((2,N))
   return SI[0],SI[1]
 
+def sir_X_to_SI_lattice_2d(X, n1, n2):
+  S, I = X.reshape(2, 2**n1, 2**n2)
+  return S, I
+
 def sir_SI_to_X(S,I):
-  return np.ravel(np.array([S,I]))
+  xp = cp.get_array_module(S)
+  return xp.ravel(xp.array([S,I]))
 
 def func_sir_dX(t, X, B, g):
   """
@@ -243,8 +207,6 @@ def func_sir_dX(t, X, B, g):
   dS = -np.einsum('i,ij,j->i', S, B, I)
   dI = -dS - g*I
 
-  # return np.array([dS, dI])
-  # return np.ravel(np.array([dS, dI]))
   return sir_SI_to_X(dS,dI)
 
 def jac(X, B, g):
@@ -265,19 +227,6 @@ def jac(X, B, g):
 
   return np.concatenate([A,B], axis=0)
 
-# def compute_sir_X(X, dt, B, g, method_solver, t_eval=None):
-#   if t_eval is None:
-#     t_eval = [0., dt]
-#   sol = scipy.integrate.solve_ivp(func_dX, y0=X, t_span=(0, dt), t_eval=t_eval, \
-#       jac=None, vectorized=True, args=(B, gamma), method=method_solver)
-#
-#   # break conditions
-#   if not (sol.success):
-#     raise ValueError("integration failed!")
-#
-#   Xnew = sol.y[:,1:].T
-#   return Xnew
-#
 def get_sir_omega_X(X, P):
   """
   Compute the total fraction of T=I+R individuals from local fractions and local populations
@@ -650,171 +599,224 @@ def wave_front_get_ode_sol(C, D=0, p0=-0.99, tmin=0, tmax=1000, npts=1000, t_eva
       return T, X, Y, Z
 
 ########## lattice simulation methods ##########
-# def get_array_module(phi):
-#   """
-#   Return the module of phi
-#   """
-#   if cp:
-#     return cp.get_array_module(phi)
-#   else:
-#     return np
-#
-# def compute_freq_mesh(shape):
-#     """
-#     compute frequency meshes.
-#     Returns a list of matrices with shape `shape`, [K1, K2, ..., Kndim], where ndim is len(shape).
-#     Ki[j1,j2,j3,...,jndim] = ji/shape[i]
-#     """
-#     ndim = len(shape)
-#
-#     # store fourier frequencies ranges
-#     kranges = []
-#     for i in range(ndim):
-#         krange = np.fft.fftfreq(shape[i])
-#         kranges.append(krange)
-#
-#     # build meshgrid of fourier frequencies
-#     Ks = [None for i in range(ndim)]
-#     return np.array(np.meshgrid(*kranges, indexing='ij'))
-#
-# def compute_nabla_tilde(shape, a=1., reverse=False):
-#     """
-#     compute the nabla "vector".
-#       * shape: vector giving the size in each dimension of an input field.
-#       * a: lattice site size. (length unit).
-#     """
-#
-#     ndim = len(shape)
-#     newshape = [ndim] + list(shape)
-#     nabla_tilde = np.zeros(newshape, dtype=np.complex_)
-#
-#     # build meshgrid of fourier frequencies
-#     Ks = compute_freq_mesh(shape)
-#
-#     # fill-in nabla_tilde vector
-#     for d in range(ndim):
-#         nabla_tilde[d] = 2*1.j*np.exp(1.j*np.pi*Ks[d])*np.sin(np.pi*Ks[d]) / a
-#         # nabla_tilde[d] = 2*np.pi*1.j*Ks[d] / a
-#
-#     if reverse:
-#         nabla_tilde = - np.conjugate(nabla_tilde)
-#
-#     return nabla_tilde
-#
-# def compute_laplacian_tilde(shape, a=1.):
-#     """
-#     compute the laplacian field.
-#       * shape: vector giving the size in each dimension of an input field.
-#       * a: lattice site size. (length unit).
-#     """
-#
-#     # build meshgrid of fourier frequencies
-#     Ks = compute_freq_mesh(shape)
-#
-#     return -4.*np.sum(np.sin(np.pi*Ks)**2, axis=0)
-#     # return (2.*np.pi)**2 * np.sum(Ks**2, axis=0)
-#
-# def compute_fft(phi, start=0):
-#     """
-#     Compute the fft for the input field phi.
-#     Assumes that the first dimension is not to be Fourier transformed.
-#     """
-#     xp = get_array_module(phi)
-#
-#     shape = phi.shape
-#     ndim = len(shape)
-#
-#     return xp.fft.fftn(phi, axes=range(start, ndim))
-#
-# def compute_ifft(phi_tilde, start=0):
-#     """
-#     Compute the ifft for the input field phi_tilde.
-#     Assumes that the first dimension is not to be Fourier transformed.
-#     Assumes that the returned field must be real-valued.
-#     """
-#     xp = get_array_module(phi_tilde)
-#
-#     shape = phi_tilde.shape
-#     ndim = len(shape)
-#
-#     return xp.real(xp.fft.ifftn(phi_tilde, axes=range(start, ndim)))
-#
-# def laplacian_discrete(X):
-#     """
-#     Compute the discrete laplacian of the matrix X such that:
-#       * there are dirichlet boundary conditions along the first axis
-#       * there are periodic boundary conditions along the second axis
-#     """
-#     xp = cp.get_array_module(X)
-#
-#     # discrete laplacian with dirichlet boundary conditions
-#     Dx = xp.diff(X, append=0, axis=0) - xp.diff(X, prepend=0, axis=0)
-#
-#     # discrete laplacian with periodic boundary conditions
-#     Dy = xp.diff(X, append=X[:,0].reshape(X.shape[0],1), axis=1) - xp.diff(X, prepend=X[:,-1].reshape(X.shape[0],1), axis=1)
-#
-#     return Dx + Dy
-#
-# def laplacian_discrete_slow(X):
-#     '''
-#     Compute discrete Laplacian with Dirichlet boundary conditions along axis 0 and periodic boundary conditions along axis 1.
-#     Give same result as `laplacian_discrete`
-#     '''
-#     xp = cp.get_array_module(X)
-#     N,M = X.shape
-#
-#     Dx = xp.zeros((N,M))
-#     Dy = xp.zeros((N,M))
-#
-#     Dx[1:-1] = X[:-2] + X[2:] - 2*X[1:-1]
-#     Dy[:, 1:-1] = X[:, :-2] + X[:, 2:] - 2*X[:, 1:-1]
-#
-#     # Dirichlet boundary condition
-#     Dx[0] = X[1] - 2*X[0]
-#     Dx[-1] = X[-2] - 2*X[-1]
-#
-#     # periodic boundary condition
-#     Dy[:,0] = X[:,-1] + X[:,1] - 2*X[:,0]
-#     Dy[:,-1] = X[:,-2] + X[:,0] - 2*X[:,-1]
-#
-#     return Dx+Dy
-#
-# def laplacian_discrete_conv(X, kernel_=np.array([[0, 1, 0],[1, -4, 1], [0, 1, 0]])):
-#     """
-#     Compute the discrete laplacian of the matrix X such that:
-#       * there are dirichlet boundary conditions along the first axis
-#       * there are periodic boundary conditions along the second axis
-#
-#     The 9-pt stencil would be [[1, 2, 1], [2,-12,2], [1,2,1]]/4
-#     Give same result as `laplacian_discrete` when using the 5-pt stencil.
-#     """
-#     xp = cp.get_array_module(X)
-#     kernel = xp.array(kernel_)
-#
-#     kp = np.array(kernel.shape) // 2
-#     xshape = np.array(X.shape)
-#     Y = xp.zeros(tuple(xshape + 2*kp), dtype=X.dtype)
-#     Y[kp[0]:kp[0]+xshape[0], kp[1]:kp[1]+xshape[1]] = X
-#
-#     # boundary conditions
-#     ## Dirichlet along X
-#     Y[kp[0]-1] = 0.
-#     for i in range(1, kp[0]):
-#         Y[kp[0]-1-i] = - Y[kp[0]+i-1]
-#     Y[kp[0]+xshape[0]] = 0.
-#     for i in range(1, kp[0]):
-#         Y[kp[0]+xshape[0]+i] = - Y[kp[0]+xshape[0]-i]
-#     ## Periodic along Y
-#     Y[:, :kp[1]] = Y[:, xshape[1]:kp[1]+xshape[1]]
-#     Y[:, -kp[1]:] = Y[:, kp[1]:2*kp[1]]
-#
-#     view_shape = tuple(np.subtract(Y.shape, kernel.shape) + 1) + kernel.shape
-#     strides = Y.strides + Y.strides
-#
-#     sub_matrices = xp.lib.stride_tricks.as_strided(Y,view_shape,strides)
-#
-# #     print(sub_matrices.shape, kernel.shape)
-#     return xp.einsum('ij,klij->kl',kernel,sub_matrices)
+def laplacian_discrete(X):
+    """
+    Compute the discrete laplacian of the matrix X such that:
+      * there are dirichlet boundary conditions along the first axis
+      * there are periodic boundary conditions along the second axis
+    """
+    xp = cp.get_array_module(X)
+
+    # discrete laplacian with dirichlet boundary conditions
+    Dx = xp.diff(X, append=0, axis=0) - xp.diff(X, prepend=0, axis=0)
+
+    # discrete laplacian with periodic boundary conditions
+    Dy = xp.diff(X, append=X[:,0].reshape(X.shape[0],1), axis=1) - xp.diff(X, prepend=X[:,-1].reshape(X.shape[0],1), axis=1)
+
+    return Dx + Dy
+
+def laplacian_discrete_slow(X):
+    """
+    Compute discrete Laplacian with Dirichlet boundary conditions along axis 0 and periodic boundary conditions along axis 1.
+    Give same result as `laplacian_discrete`
+    """
+    xp = cp.get_array_module(X)
+    N,M = X.shape
+
+    Dx = xp.zeros((N,M))
+    Dy = xp.zeros((N,M))
+
+    Dx[1:-1] = X[:-2] + X[2:] - 2*X[1:-1]
+    Dy[:, 1:-1] = X[:, :-2] + X[:, 2:] - 2*X[:, 1:-1]
+
+    # Dirichlet boundary condition
+    Dx[0] = X[1] - 2*X[0]
+    Dx[-1] = X[-2] - 2*X[-1]
+
+    # periodic boundary condition
+    Dy[:,0] = X[:,-1] + X[:,1] - 2*X[:,0]
+    Dy[:,-1] = X[:,-2] + X[:,0] - 2*X[:,-1]
+
+    return Dx+Dy
+
+def laplacian_discrete_conv(X, kernel_=np.array([[0, 1, 0],[1, -4, 1], [0, 1, 0]])):
+    """
+    Compute the discrete laplacian of the matrix X such that:
+      * there are dirichlet boundary conditions along the first axis
+      * there are periodic boundary conditions along the second axis
+
+    The 9-pt stencil would be [[1, 2, 1], [2,-12,2], [1,2,1]]/4
+    Give same result as `laplacian_discrete` when using the 5-pt stencil.
+    """
+    xp = cp.get_array_module(X)
+    kernel = xp.array(kernel_)
+
+    kp = np.array(kernel.shape) // 2
+    xshape = np.array(X.shape)
+    Y = xp.zeros(tuple(xshape + 2*kp), dtype=X.dtype)
+    Y[kp[0]:kp[0]+xshape[0], kp[1]:kp[1]+xshape[1]] = X
+
+    # boundary conditions
+    ## Dirichlet along X
+    Y[kp[0]-1] = 0.
+    for i in range(1, kp[0]):
+        Y[kp[0]-1-i] = - Y[kp[0]+i-1]
+    Y[kp[0]+xshape[0]] = 0.
+    for i in range(1, kp[0]):
+        Y[kp[0]+xshape[0]+i] = - Y[kp[0]+xshape[0]-i]
+    ## Periodic along Y
+    Y[:, :kp[1]] = Y[:, xshape[1]:kp[1]+xshape[1]]
+    Y[:, -kp[1]:] = Y[:, kp[1]:2*kp[1]]
+
+    view_shape = tuple(np.subtract(Y.shape, kernel.shape) + 1) + kernel.shape
+    strides = Y.strides + Y.strides
+
+    sub_matrices = xp.lib.stride_tricks.as_strided(Y,view_shape,strides)
+
+#     print(sub_matrices.shape, kernel.shape)
+    return xp.einsum('ij,klij->kl',kernel,sub_matrices)
+
+def lattice_2d_ode(t, X, alpha, beta, gamma, n1, n2):
+    """
+    function to integrate for the nearest neighbor SIR dynamics on a 2d lattice.
+    """
+    # extract S and I
+    S, I = sir_X_to_SI_lattice_2d(cp.array(X), n1, n2)
+
+    kernel = np.array([[1,2,1],[2,-12,2],[1,2,1]], dtype=np.float_)/4.  #9-pt stencil for the Laplacian computation
+
+    # compute U
+    U = ((alpha+4*beta)*I + beta*laplacian_discrete_conv(I, kernel))
+
+    dS = -S*U
+    dI = +S*U - gamma*I
+
+    dX = sir_SI_to_X(dS, dI)
+    return dX.get()
+
+
+def lattice_2d_event_upperbound(t, X, alpha, beta, gamma, n1, n2):
+    S, I = sir_X_to_SI_lattice_2d(cp.array(X), n1, n2)
+    xp = cp.get_array_module(S)
+    S_tot = float(xp.mean(S))
+    T_tot = 1. - S_tot
+    return T_tot - 0.99
+
+def lattice_2d_integrate_sir(S0, I0, alpha, beta, gamma, tmax=100., tdump=1.):
+    """
+    Integrate the SIR dynamics on a lattice.
+    INPUT:
+      * S0: initial array of susceptible individuals
+      * I0: initial array of infected individuals
+      * alpha: intracommunity infectivity rate
+      * beta: intercommunity infectivity rate
+      * gamma: recovery rate
+
+    OUTPUT:
+      * times: times at which the trajectory is sampled
+      * Ss: array of shape T x 2^n1 x 2^n2 representing the trajectory of susceptible individuals
+      * Is: array of shape T x 2^n1 x 2^n2 representing the trajectory of infected individuals
+    """
+    from scipy.integrate import solve_ivp
+    # determine n1 and n2
+    N,M = S0.shape
+    n1 = int(np.log2(N))
+    if (N != 2**n1):
+      raise ValueError("'N' must be a power of 2")
+    n2 = int(np.log2(M))
+    if (M != 2**n2):
+      raise ValueError("'M' must be a power of 2")
+
+   # initial condition
+    args = [alpha, beta, gamma, n1, n2]
+    X0 = sir_SI_to_X(S0, I0).copy().get()
+    event_upperbound = lattice_2d_event_upperbound
+    event_upperbound.terminal = True
+
+    # integration
+    sol = solve_ivp(lattice_2d_ode, t_span=[0.,tmax], y0=X0, method='Radau', \
+                    args=args, t_eval=np.linspace(0,tmax,int(tmax/tdump) + 1), \
+                    events=event_upperbound)
+
+    times = sol.t
+    Xs = np.array([sir_X_to_SI_lattice_2d(x, n1, n2) for x in sol.y.T])
+    Ss = Xs[:,0]
+    Is = Xs[:,1]
+    return times, Ss, Is
+
+def lattice_2d_ramp_fit(W, times, wmax, nfit=1000, maxfev=1000):
+    """
+    Fit the input function (times, W) to a ramp function.
+    """
+    from scipy.optimize import curve_fit
+
+    idx = W<wmax
+    Wfit = W[idx]
+    npts = len(Wfit)
+    ifit = max(1, int(float(npts)/nfit))
+    Yfit = Wfit[::ifit]
+    nfit = len(Yfit)
+    Xfit = np.arange(nfit)
+
+    a = 1.
+    c = (Yfit[-1]-Yfit[0])/(Xfit[-1]-Xfit[0])
+    b = Yfit[0] - c*np.log(2.)
+    P0 = [a,b,c]
+    P = curve_fit(framp, Xfit, Yfit, \
+              p0=P0, jac=framp_jac, \
+             maxfev=maxfev)[0]
+
+    dt = np.diff(times)[0]
+    t_inter = dt*ifit
+    return P[0] / t_inter, P[1]*t_inter, P[2]
+
+def lattice_2d_get_velocity(W, times, wmax, maxfev=1000):
+    a, b, c = lattice_2d_ramp_fit(W, times, wmax=wmax, maxfev=maxfev)
+    return a*c
+
+def lattice_2d_get_velocity_theoretical(beta, gamma, alpha, S_ss=1.):
+    """
+    Return the theoretical lower bound for the wave velocity
+    INPUT:
+      * beta: intercommunity infectivity rate
+      * gamma: recovery rate
+      * alpha: intracommunity infectivity rate
+      * S_ss: susceptible fraction right to the wave (before being hit).
+    """
+    a = 4 + alpha/beta
+    return 2*beta*S_ss * np.sqrt(a - gamma/(beta*S_ss))
+
+def lattice_2d_rescale_wave_profile(kfit, X, dT, Z_C, Y_C, v, dx=1.):
+    """
+    Fit the wave profile (X, dT) to the ODE solution (X_C, dT_C)
+    """
+    # recenter the profile around 0
+    k0 = np.argmax(dT)
+    x0 = X[k0]
+    Z = kfit*(X.copy()-x0)
+
+    # retain a window corresponding to the input ODE solution
+    zlo = max(np.min(Z_C), np.min(Z))
+    zhi = min(np.max(Z_C), np.max(Z))
+    idx = (Z >= zlo) & (Z <= zhi)
+    Z = Z[idx]
+    Y = dT.copy()[idx]
+    if (len(Z) > len(Z_C)):
+        raise ValueError("Increase resolution of ODE solution!")
+
+    # rescale Y
+    Y /= (v*kfit/2.)
+
+    return Z, Y
+
+def lattice_2d_func_fit_wave_sol(kfit, X, G, X_C, dT_C, v, dx=1.):
+    """
+    Get the LSQ
+    """
+    X, G, X_binned, F = get_fit_wave_sol(kfit, X, G, X_C, dT_C, dx)
+
+    n = len(X)
+    return np.sum((F-G/(v*kfit/2.))**2)/n
 
 #==============================================================================
 # plot methods
