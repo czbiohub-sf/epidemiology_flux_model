@@ -702,7 +702,7 @@ def lattice_2d_event_upperbound(t, X, alpha, beta, gamma, n1, n2):
     T_tot = 1. - S_tot
     return T_tot - 0.99
 
-def lattice_2d_integrate_sir(S0, I0, alpha, beta, gamma, tmax=100., tdump=1.):
+def lattice_2d_integrate_sir(S0, I0, alpha, beta, gamma, tmax=100., tdump=1., method='Radau'):
     """
     Integrate the SIR dynamics on a lattice.
     INPUT:
@@ -734,7 +734,7 @@ def lattice_2d_integrate_sir(S0, I0, alpha, beta, gamma, tmax=100., tdump=1.):
     event_upperbound.terminal = True
 
     # integration
-    sol = solve_ivp(lattice_2d_ode, t_span=[0.,tmax], y0=X0, method='Radau', \
+    sol = solve_ivp(lattice_2d_ode, t_span=[0.,tmax], y0=X0, method=method, \
                     args=args, t_eval=np.linspace(0,tmax,int(tmax/tdump) + 1), \
                     events=event_upperbound)
 
