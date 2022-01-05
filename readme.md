@@ -2,7 +2,7 @@
 
 The repository contains supplementary information for the manuscript :
 *A model based on a high-resolution flux matrix explains the spread of
-diseases in a spatial network and the effect of mitigation strategies*[doi.org/10.1101/2021.12.22.21268059](https://doi.org/10.1101/2021.12.22.21268059).
+diseases in a spatial network and the effect of mitigation strategies* [[doi.org/10.1101/2021.12.22.21268059](https://doi.org/10.1101/2021.12.22.21268059)].
 
 Please start at the [index](notebooks/0-index.ipynb) notebook to be guided through
 the results.
