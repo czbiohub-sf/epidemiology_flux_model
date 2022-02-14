@@ -56,3 +56,5 @@ bash execute_notebooks.sh
 
 Note that the last command must be run from the appropriate environment,
 namely the Docker container if you have opted to use Docker.
+
+Small modification.
