@@ -10,7 +10,9 @@
 % Note: The variable 'rng' that specifies the selected values of distances is set in the 
 % main program. The results for each distance are saved in '/DIST/eval/nstr.mat' where 
 % nstr is a numerical string in the range between 1 and ndst. 
-
+if ~exist([dir_fig,'/','eval'],'dir')
+    mkdir([dir_fig,'/','eval']);
+end
 Es=zeros(N,nsamp); % eigenvalues
 Ts=zeros(1,nsamp); % omega for all samples
 Ls=cell(2,nsamp);  % [L,err] of size [N,2] 
@@ -28,6 +30,6 @@ for n=rng
         Ls{2,s}=err1;
         if mod(s,50)==0;fprintf('%u\t',s); end
     end
-    %save([dir_fig,'/','eval','/',num2str(n,'%05u'),'.mat'],'n','Es','Ts','Ls');
+    save([dir_fig,'/','eval','/',num2str(n,'%05u'),'.mat'],'n','Es','Ts','Ls');
     fprintf('\t%s\t%u\n','n=',n);
 end

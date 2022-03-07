@@ -38,8 +38,9 @@ if 0
 end
 %load([dir_fig,'/','rmv_band_toll.mat']);
 rng=(1:ndst);
-if 0
-    get_band_eval_omega; end
+if 1
+    get_band_eval_omega; 
+end
 
 %% level spacing
 omega=zeros(ndst,1);    % final toll statistics: [mean,std,min,max]

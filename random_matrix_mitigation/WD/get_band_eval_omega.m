@@ -9,6 +9,9 @@
 % Note: The variable 'rng' that specifies the selected values of bandwidth (i.e. number of % is set in the main program. The results for each bandwidth are saved in '/BAND/eval/
 % nstr.mat' where nstr is a numerical string in the range between 1 and ndst. 
 
+if ~exist([dir_fig,'/','eval'],'dir')
+    mkdir([dir_fig,'/','eval']);
+end
 
 Es=zeros(N,nsamp); % eigenvalues
 Ts=zeros(1,nsamp);   % omega for all samples

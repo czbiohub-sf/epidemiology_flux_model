@@ -38,7 +38,7 @@ end
 
 load([dir_fig,'/','rmv_dist_toll.mat']);
 rng=(1:ndst);           % specify selected distances
-if 0
+if 1
     get_dist_eval_omega; 
 end
 

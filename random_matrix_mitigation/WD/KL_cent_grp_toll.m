@@ -39,7 +39,9 @@ end
 load([dir_fig,'/','rmv_cent_toll.mat']);
 %% evals and total toll
 rng=[1:150,160:10:ndst];  % rng are selected values of 1<=n<=ndst    
-if 0;get_cent_eval_omega; end
+if 1
+    get_cent_eval_omega; 
+end
 %% level spacing
 omega=zeros(ndst,1);    % final toll statistics: [mean,std,min,max]
 D=zeros(ndst,1);        % KL
