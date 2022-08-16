@@ -20,6 +20,7 @@ except ImportError:
   cp = None
 import pandas as pd
 import datetime
+from dateutil.relativedelta import relativedelta
 from pathlib import Path
 import shutil
 import scipy.integrate
@@ -71,7 +72,7 @@ def geo_dist(M1, M2):
     pbar = 0.5*(p1+p2)*np.pi/180.
     return np.sqrt(dp**2+np.cos(pbar)*dl**2)
 
-def unfold_positive(E, n=2**5, deg=12, nbins=2**6):
+def unfold_positive(E, n=2**5, deg=12, nbins=2**6, aper=0.):
   """
   Based on: https://www.mathworks.com/matlabcentral/fileexchange/24122-unfoldingpositive
 
@@ -120,7 +121,9 @@ def unfold_positive(E, n=2**5, deg=12, nbins=2**6):
   xiMatr1 = p(E)
 
   d = np.ravel(np.diff(xiMatr1, axis=1))
-  return np.histogram(d,bins=nbins,density=True)
+  qlo, qhi = np.percentile(d, aper*0.5), np.percentile(d, 100.-aper*0.5)
+  idx = (d >= qlo) & (d <= qhi)
+  return np.histogram(d[idx] ,bins=nbins,density=True)
 
 #==============================================================================
 # modelling
@@ -139,17 +142,18 @@ def fsigmoid_jac(x, *params):
     grad[3] = -(x-b)*np.exp(d*(x-b)) * a /(1.0 + np.exp(d*(x-b)))**2
     return grad.T
 
-def framp(x, a, b, c):
-    return c*np.logaddexp(0, a*(x-b))
+def framp2(x, a, b, c, d):
+    return c*np.logaddexp(0, a*(x-b)) + d
 
-def framp_jac(x, a, b, c):
+def framp2_jac(x, a, b, c, d):
     g = np.exp(-a*(x-b))
     J1 = (x-b)*c/(1.+g)
     J2 = -a*c/(1.+g)
     J3 = np.logaddexp(0, a*(x-b))
-    return np.array([J1, J2, J3]).T
+    J4 = np.ones(len(x))
+    return np.array([J1, J2, J3, J4]).T
 
-########## Utils ##########
+# ########## Utils ##########
 def read_df(t, tfmt, store, path):
   """
   Read a matrix present in a `store` at a certain `path` with
@@ -159,7 +163,7 @@ def read_df(t, tfmt, store, path):
   df = store[str(key)]
   return df
 
-def get_infectivity_matrix(F):
+def get_infectivity_matrix(F, vscales=None):
   """
   Return the infectivity matrix from the input flux matrix
   """
@@ -167,22 +171,29 @@ def get_infectivity_matrix(F):
   if (F.shape[1] != N):
     raise ValueError
 
-  pvec = F.diagonal()
+  if vscales is None:
+    vscales = np.ones(N, dtype=np.float_)
+
+  pvec = F.diagonal()  # populations
   pinv = np.zeros(N, dtype=np.float_)
   idx = pvec > 0.
   pinv[idx] = 1./pvec[idx]
 
   L = np.zeros((N,N), dtype=np.float_)
-  L = F + F.T
-  np.fill_diagonal(L, pvec)
-  L = np.einsum('ij,i->ij', L, pinv)
+  # L = F + F.T
+  FS = np.einsum('ab,b->ab', F, vscales)
+  L = FS + FS.T
 
-  # symmetrize it
-  L = 0.5*(L+L.T)
+  np.fill_diagonal(L, pvec*vscales)
+  L = np.einsum('ab,a->ab', L, pinv)
 
-  return L
+  # # symmetrize it
+  # L = 0.5*(L+L.T)
 
-########## SIR integration ##########
+  vmax = np.max(L.diagonal())
+  return L/vmax
+
+# ########## SIR integration ##########
 def sir_X_to_SI(X, N):
   SI = X.reshape((2,N))
   return SI[0],SI[1]
@@ -208,6 +219,22 @@ def func_sir_dX(t, X, B, g):
   dI = -dS - g*I
 
   return sir_SI_to_X(dS,dI)
+
+def func_sir_dV(t, X, B, g, s0):
+  Y = 1. - s0*np.exp(-X)
+  return np.einsum('ab,b', B, Y) - g*X
+
+def guess_scale(V0, V1_real, B, g, Si_real, dt=1.):
+  """
+  Return a guess for the scale parameter
+  """
+  T0 = 1. - Si_real*np.exp(-V0)
+  BT = np.einsum('ab,b', B, T0)
+  A = V1_real - (1. - g*dt)*V0
+
+  NUM = np.einsum('a,a', BT, A)
+  DENUM = np.einsum('a,a', BT, BT)
+  return NUM / DENUM / dt
 
 def jac(X, B, g):
   N = B.shape[0]
@@ -240,81 +267,12 @@ def get_sir_omega_SI(S, I, P):
   """
   return get_sir_omega_X(sir_SI_to_X(S, I), P)
 
-def compute_sir_X(X, dt, B, gamma, method_solver, t_eval=None):
-  """
-  Utility function to integrate the SIR dynamics by dt.
-  """
-  if t_eval is None:
-    t_eval = [0., dt]
+def get_dTs(Ss, population):
 
-  sol = scipy.integrate.solve_ivp(func_sir_dX, y0=X, t_span=(0,dt), \
-                                  t_eval=t_eval, vectorized=True, args=(B, gamma), \
-                                  method=method_solver)
-
-  # break conditions
-  if not (sol.success):
-    raise ValueError("integration failed!")
-
-  Xnew = sol.y[:,-1:].T
-
-  return Xnew
-
-def get_epidemic_size(M, epsilon_i, gamma, itermax=1000, rtol_stop=1.0e-8):
-  """
-  Compute the epidemic size given an initial condition epsilon_i and a infectivity matrix M.
-  epsilon_i represents the fraction of infected individuals at time t=0, in each community.
-  """
-  N = M.shape[0]
-  if (M.shape[1] != N):
-    raise ValueError
-  if (len(epsilon_i) != N):
-    raise ValueError
-
-  Xnew = np.zeros(N, dtype=np.float_)
-  for iter in range(itermax):
-    X = Xnew.copy()
-    B = 1. - (1.-epsilon_i)*np.exp(-X)
-    Xnew = 1./gamma * np.einsum('ab,b', M, B)
-
-    rtol = np.linalg.norm(X-Xnew)/(np.linalg.norm(X)+np.linalg.norm(Xnew))*2
-#     print("rtol = {:.6e}".format(rtol))
-    if (rtol < rtol_stop):
-      break
-    if (iter == itermax -1):
-      #             raise ValueError("Algorithm didn't converge! rtol = {:.6e}".format(rtol))
-      print("Algorithm didn't converge! rtol = {:.6e}".format(rtol))
-
-  B = 1. - (1.-epsilon_i)*np.exp(-X)
-  Omega = np.sum(B) / N
-  return Omega
-
-def get_target_scale(M, Ii, gamma, target=0.1, rtol_stop=1.0e-8, itermax=100):
-  """
-  Return the scale parameter to apply to the infectivity matrix in order to have an epidemic size equal to `target`.
-  """
-  from scipy.optimize import root_scalar
-
-  # define function to zero
-  func_root = lambda x: get_epidemic_size(x*M, Ii, gamma, itermax=itermax, rtol_stop=rtol_stop) - target
-
-  # initial bracketing
-  xlo = 1.0e-5
-  flo = func_root(xlo)
-  if flo > 0.:
-    raise ValueError("Lower bound on scale not small enough!")
-  xhi = xlo
-  for k in range(10):
-    fhi = func_root(xhi)
-    if fhi > 0.:
-      break
-    else:
-      xhi *= 10
-  if fhi < 0.:
-    raise ValueError("Problem in bracketing!")
-
-  # root finding
-  sol = root_scalar(func_root, bracket=(xlo, xhi), method='brentq', options={'maxiter': 100})
-  return sol.root
+  dTs = np.diff(1.-Ss, axis=0)
+  dTs = np.concatenate([1.-Ss[0].reshape(1,-1), dTs], axis=0)
+  dT_tot = np.einsum('ta,a->t', dTs, population) / np.sum(population)
+  return dTs, dT_tot
 
 def integrate_sir(Xi, times, scales, gamma, store, pathtoloc, tfmt='%Y-%m-%d', method_solver='DOP853', verbose=True):
   """
@@ -382,224 +340,53 @@ def integrate_sir(Xi, times, scales, gamma, store, pathtoloc, tfmt='%Y-%m-%d', m
 
   return ts, Ss, Is
 
-def fit_sir(times, T_real, gamma, population, store, pathtoloc, tfmt='%Y-%m-%d', method_solver='DOP853', verbose=True, \
-            b_scale=1):
-  """
-  Fit the dynamics of the SIR starting from real data contained in `pathtocssegi`.
-  The initial condition is taken from the real data.
-  The method assumes that in the `store` at the indicated `path`, there are entries
-  in the format %Y-%m-%d that described the infectivity matrices
-  for the times `times[:-1]`.
-  `populations` is the vector with the population per community.
-
-  OUTPUT:
-    * Xs
-    * ts
-    * scales
-
-  For the output the dumping interval is one day.
-  """
-
-  # initializations
-  nt = len(times)
-  t = times[0]
-  B = read_df(t, tfmt, store, pathtoloc).to_numpy()
-  N = B.shape[0]
-  Y_real = np.einsum('ta,a->t', T_real, population) / np.sum(population)
-
-  X = np.zeros((2, N), dtype=np.float_)
-  I = T_real[0]
-  S = 1 - I
-  X = sir_SI_to_X(S, I)
-
-  y = get_sir_omega_X(X, population)
-
-  ts = [t]
-  Xs = [X.reshape(2,N)]
-  Ys = [y]
-  b_scales = []
-
-  blo = 0.
-  # print("nt = ", nt)
-
-  for i in range(1, nt):
-    if verbose:
-      print(f'Integrating day {t}')
-    mykey = Path(pathtoloc) / t.strftime(tfmt)
-    mykey = str(mykey)
-    if mykey in store.keys():
-      B = read_df(t, tfmt, store, pathtoloc).to_numpy()
-    elif verbose:
-      print("Infectivity matrix not updated!")
-
-    tnew = times[i]
-    dt = int((tnew - t).days)
-    ypred = Y_real[i]
-
-    # root finding method
-    func_root = lambda b: get_sir_omega_X(compute_sir_X(X, dt, b*B, gamma, method_solver), \
-                                          population) - ypred
-
-    # initial bracketing
-    bhi = b_scale
-    fscale = 3.
-    for k in range(1,10):
-      f = func_root(bhi)
-      if f > 0:
-        break
-      else:
-        bhi *= fscale
-    if f < 0:
-      raise ValueError("Problem in bracketing!")
-
-    # find the root
-    sol = scipy.optimize.root_scalar(func_root, bracket=(blo, bhi), method='brentq', \
-                                      options={'maxiter': 100})
-    if not (sol.converged):
-      raise ValueError("root finding failed!")
-    b_scale = sol.root
-
-    # compute next state with optimal scale
-    t_eval = np.arange(dt+1)
-    Xnews = compute_sir_X(X, dt, b_scale*B, gamma, method_solver, t_eval=t_eval)
-    Xnew = Xnews[-1]
-    y = get_sir_omega_X(Xnew,population)
-    print(f"b = {b_scale}, y = {y}, ypred = {ypred}, y-ypred = {y-ypred}")
-
-    # dump
-    # data.append(Xnew.reshape(2,N))
-    Xs += [Xnew.reshape(2,N) for Xnew in Xnews]
-    ts += [t + datetime.timedelta(days=int(dt)) for dt in t_eval[1:]]
-    Ys.append(y)
-    b_scales.append(b_scale)
-
-    # update
-    t = tnew
-    X = Xnew
-
-  b_scales.append(None)  # B has ndays-1 entries
-  print("Fitting complete")
-
-  # prepare export of results
-  S = np.array([X[0] for X in Xs])
-  I = np.array([X[1] for X in Xs])
-  clusters = np.arange(N, dtype=np.uint)
-  df_S = pd.DataFrame(data=S, index=ts, columns=clusters)
-  df_I = pd.DataFrame(data=I, index=ts, columns=clusters)
-  df_fit = pd.DataFrame(data=np.array([b_scales, Ys]).T, index=times, columns=["scale", "frac_infected_tot"])
-
-  return df_S, df_I, df_fit
-
 ########## wave analysis methods ##########
-def wave_ode_gamma_eq0(t, x, *f_args):
+def wave_ode(t, X, *f_args):
   """
-  Right hand side of the wave equation ODE when gamma = 0
+  Right hand side of the wave equation ODE
   """
-  C = f_args[0]
-  q, p = x
+  gamma = f_args[0]
+  vc = 2.*np.sqrt(1-gamma)
+  f, h, g = X
 
-  return np.array([-q/(1.+p) + C*(1.-p), q,])
+  return np.array([-(vc/g)*f  + (gamma/g - 1.)*h, f, -f + gamma/vc * h])
 
-def wave_ode_gamma_neq0(t, X, *f_args):
-  """
-  Right hand side of the wave equation ODE when gamma > 0
-  """
-  C = f_args[0]
-  D = f_args[1]
-  CD = C*D
-  x, y, z = X
-
-  return np.array([-(1./(1.+y) + CD)*x  + C*(1+D*CD)*(z-y), x, CD*(z-y)])
-
-def wave_front_get_ode_sol(C, D=0, p0=-0.99, tmin=0, tmax=1000, npts=1000, t_eval=None, eps=1.0e-3, method='BDF', x0_inf=1.0e-12, X0=None):
+def wave_front_get_ode_sol(X0, gamma, zmax=1000, npts=1000, t_eval=None, s0=1., eps=1.0e-10, method='BDF'):
     from scipy.integrate import solve_ivp
 
-    # first case: D = 0 (no recovery rate)
-    if D == 0:
-      func_ode = wave_ode_gamma_eq0
+    vc = 2 * np.sqrt(1. - gamma)
+    def event_upperbound(t, x, *f_args):
+        return (-x[0] + gamma / vc *x[1]) - eps  # check derivative of S
+        # return x[2]/ftol - s0
+        # return (x[0]*vc/x[2] + (gamma/x[2] - 1.)*x[1]) - 1.0e-10
+        # return x[0] + 1.0e-3
 
-      def event_upperbound(t, x, *f_args):
-          return np.abs(x[0])-x0_inf
-          # return x[1]+p0
-
-      event_upperbound.terminal=True
-
-      if X0 is None:
-        q0 = C*(1-p0**2)
-        X0=np.array([q0,p0])
-      args = [C]
-
-      if t_eval is None:
-        t_eval = np.linspace(tmin,tmax,npts)
-
-      sol = solve_ivp(func_ode, t_span=[tmin,tmax], y0=X0, method=method, args=args, \
-          events=event_upperbound, t_eval=t_eval)
-
-      T = sol.t
-      X = sol.y[0]
-      Y = sol.y[1]
-      return T, X, Y
-
-    # second case: D > 0 (with recovery rate)
+    if eps < 0.:
+      event_upperbound.terminal=False
     else:
-      func_ode = wave_ode_gamma_neq0
-
-      def event_upperbound(t, X, *f_args):
-#         return x[1]-1.0
-        # return X[0]
-        return np.abs(X[0]) - x0_inf
-
       event_upperbound.terminal=True
 
-      def get_final_state(y0, tmax=10000, method=method):
-        z0 = y0 + 2*eps # so that S+I+R=1
-        x0 = 2*C*eps*(1.+y0)
-        X0=np.array([x0,y0,z0])
-        args = [C, D]
+    func_ode = wave_ode
+    args = [gamma]
 
-        sol = solve_ivp(func_ode, t_span=[0.,tmax], y0=X0, method=method, args=args, events=event_upperbound)
-        return sol.y[1,-1]
+    if t_eval is None:
+      t_eval = np.linspace(0,zmax,npts)
 
-      from scipy.optimize import root_scalar
-      if X0 is None:
-        func_min = lambda y: get_final_state(y) - 1.
-        delta=0.01
-        for it in range(6):
-          ylo = -1+delta
-          flo = func_min(ylo)
-          if flo > 0:
-            break
-          else:
-            delta /= 10
-        if (flo < 0.):
-          raise ValueError("flo < 0: change eps or tmax (most likely trajectory truncated early).")
-        yhi = D-1
-        fhi = func_min(yhi)
-        if (fhi > 0.):
-          raise ValueError("fhi > 0: change eps or tmax")
+    sol = solve_ivp(func_ode, t_span=[t_eval[0],t_eval[-1]], y0=X0, method=method, args=args, \
+        events=event_upperbound, t_eval=t_eval)
+    # sol = solve_ivp(func_ode, t_span=[t_eval[0],t_eval[-1]], y0=X0, method=method, args=args, \
+    #       t_eval=t_eval)
 
-        rt = root_scalar(func_min, method='brentq', bracket=[ylo,yhi])
-        y0 = rt.root
+    Z = sol.t
+    I_der = sol.y[0]
+    I = sol.y[1]
+    S = sol.y[2]
 
-        z0 = y0 + 2*eps # so that S+I+R=1
-        x0 = 2*C*eps*(1.+y0)
-        X0=np.array([x0,y0,z0])
-
-      args = [C, D]
-
-      if t_eval is None:
-        t_eval = np.linspace(tmin,tmax,npts)
-
-      sol = solve_ivp(func_ode, t_span=[tmin, tmax], y0=X0, method=method, args=args, events=event_upperbound, t_eval=t_eval)
-
-      T = sol.t
-      X = sol.y[0]
-      Y = sol.y[1]
-      Z = sol.y[2]
-      return T, X, Y, Z
+    S_der = (-I_der + gamma/vc*I)
+    return Z, S, I, S_der
 
 ########## lattice simulation methods ##########
-def laplacian_discrete(X):
+def laplacian_discrete(X, xlo=0., xhi=0.):
     """
     Compute the discrete laplacian of the matrix X such that:
       * there are dirichlet boundary conditions along the first axis
@@ -608,38 +395,14 @@ def laplacian_discrete(X):
     xp = cp.get_array_module(X)
 
     # discrete laplacian with dirichlet boundary conditions
-    Dx = xp.diff(X, append=0, axis=0) - xp.diff(X, prepend=0, axis=0)
+    Dx = xp.diff(X, append=xhi, axis=0) - xp.diff(X, prepend=xlo, axis=0)
 
     # discrete laplacian with periodic boundary conditions
     Dy = xp.diff(X, append=X[:,0].reshape(X.shape[0],1), axis=1) - xp.diff(X, prepend=X[:,-1].reshape(X.shape[0],1), axis=1)
 
     return Dx + Dy
 
-def laplacian_discrete_slow(X):
-    """
-    Compute discrete Laplacian with Dirichlet boundary conditions along axis 0 and periodic boundary conditions along axis 1.
-    Give same result as `laplacian_discrete`
-    """
-    xp = cp.get_array_module(X)
-    N,M = X.shape
-
-    Dx = xp.zeros((N,M))
-    Dy = xp.zeros((N,M))
-
-    Dx[1:-1] = X[:-2] + X[2:] - 2*X[1:-1]
-    Dy[:, 1:-1] = X[:, :-2] + X[:, 2:] - 2*X[:, 1:-1]
-
-    # Dirichlet boundary condition
-    Dx[0] = X[1] - 2*X[0]
-    Dx[-1] = X[-2] - 2*X[-1]
-
-    # periodic boundary condition
-    Dy[:,0] = X[:,-1] + X[:,1] - 2*X[:,0]
-    Dy[:,-1] = X[:,-2] + X[:,0] - 2*X[:,-1]
-
-    return Dx+Dy
-
-def laplacian_discrete_conv(X, kernel_=np.array([[0, 1, 0],[1, -4, 1], [0, 1, 0]])):
+def laplacian_discrete_conv(X, kernel_=np.array([[0, 1, 0],[1, -4, 1], [0, 1, 0]]), xlo=0., xhi=0.):
     """
     Compute the discrete laplacian of the matrix X such that:
       * there are dirichlet boundary conditions along the first axis
@@ -658,12 +421,15 @@ def laplacian_discrete_conv(X, kernel_=np.array([[0, 1, 0],[1, -4, 1], [0, 1, 0]
 
     # boundary conditions
     ## Dirichlet along X
-    Y[kp[0]-1] = 0.
-    for i in range(1, kp[0]):
-        Y[kp[0]-1-i] = - Y[kp[0]+i-1]
-    Y[kp[0]+xshape[0]] = 0.
-    for i in range(1, kp[0]):
-        Y[kp[0]+xshape[0]+i] = - Y[kp[0]+xshape[0]-i]
+    Y[:kp[0]] = xlo
+    Y[xshape[0]+kp[0]:] = xhi
+    # ## Dirichlet along X
+    # Y[kp[0]-1] = 0.
+    # for i in range(1, kp[0]):
+    #     Y[kp[0]-1-i] = - Y[kp[0]+i-1]
+    # Y[kp[0]+xshape[0]] = 0.
+    # for i in range(1, kp[0]):
+    #     Y[kp[0]+xshape[0]+i] = - Y[kp[0]+xshape[0]-i]
     ## Periodic along Y
     Y[:, :kp[1]] = Y[:, xshape[1]:kp[1]+xshape[1]]
     Y[:, -kp[1]:] = Y[:, kp[1]:2*kp[1]]
@@ -676,152 +442,215 @@ def laplacian_discrete_conv(X, kernel_=np.array([[0, 1, 0],[1, -4, 1], [0, 1, 0]
 #     print(sub_matrices.shape, kernel.shape)
     return xp.einsum('ij,klij->kl',kernel,sub_matrices)
 
-def lattice_2d_ode(t, X, alpha, beta, gamma, n1, n2):
+def get_residual_susceptible(gamma_tilde, s0=1.):
+  """
+  Return the residual fraction of susceptible individuals.
+  This is the renormalized SIR equation with beta = 1.
+  """
+  if gamma_tilde < 0.:
+      raise ValueError("gamma > 0!")
+  elif (gamma_tilde == 0.):
+      return 0.
+  else:
+    from scipy.optimize import root_scalar
+
+    func_root = lambda x: s0*np.exp(-x) + gamma_tilde*x - 1.
+    xlo = np.log(s0/gamma_tilde)
+    xhi = 1./gamma_tilde
+    sol = root_scalar(func_root, bracket=[xlo, xhi], method='brentq')
+    xinf = sol.root
+    sinf = s0*np.exp(-xinf)
+    return sinf
+
+def lattice_2d_ode(t, X, gamma, N1, N2, Ilo=0., Ihi=0.):
     """
     function to integrate for the nearest neighbor SIR dynamics on a 2d lattice.
     """
     # extract S and I
-    S, I = sir_X_to_SI_lattice_2d(cp.array(X), n1, n2)
+    S, I = cp.reshape(cp.array(X), (2, N1, N2), order='C')
 
     kernel = np.array([[1,2,1],[2,-12,2],[1,2,1]], dtype=np.float_)/4.  #9-pt stencil for the Laplacian computation
+    # kernel = np.array([[0,1,0],[1,-4,1],[0,1,0]], dtype=np.float_)
 
     # compute U
-    U = ((alpha+4*beta)*I + beta*laplacian_discrete_conv(I, kernel))
+    lap_I = laplacian_discrete_conv(I, kernel, xlo=Ilo, xhi=Ihi)
+    # lap_I = laplacian_discrete(I, xlo=Ilo, xhi=Ihi)
+    U = lap_I + I
 
     dS = -S*U
     dI = +S*U - gamma*I
 
-    dX = sir_SI_to_X(dS, dI)
+    dX = cp.ravel(cp.array([dS, dI]), order='C')
     return dX.get()
 
+def lattice_2d_event_upperbound(t, X, gamma, N1, N2, Ilo=0., Ihi=0.):
+    eps = 1.0e-5
+    S, I = np.reshape(X, (2, N1, N2), order='C')
+    return eps - np.mean(I[-1])
 
-def lattice_2d_event_upperbound(t, X, alpha, beta, gamma, n1, n2):
-    S, I = sir_X_to_SI_lattice_2d(cp.array(X), n1, n2)
-    xp = cp.get_array_module(S)
-    S_tot = float(xp.mean(S))
-    T_tot = 1. - S_tot
-    return T_tot - 0.99
+def lattice_2d_plot_profile(times, X_list, idump, ylabel, mass, \
+        figsize=(8,3), cmap=cm.rainbow, fileout=None, dpi=300):
 
-def lattice_2d_integrate_sir(S0, I0, alpha, beta, gamma, tmax=100., tdump=1., method='Radau'):
-    """
-    Integrate the SIR dynamics on a lattice.
-    INPUT:
-      * S0: initial array of susceptible individuals
-      * I0: initial array of infected individuals
-      * alpha: intracommunity infectivity rate
-      * beta: intercommunity infectivity rate
-      * gamma: recovery rate
+    Nt, N = X_list.shape
 
-    OUTPUT:
-      * times: times at which the trajectory is sampled
-      * Ss: array of shape T x 2^n1 x 2^n2 representing the trajectory of susceptible individuals
-      * Is: array of shape T x 2^n1 x 2^n2 representing the trajectory of infected individuals
-    """
-    from scipy.integrate import solve_ivp
-    # determine n1 and n2
-    N,M = S0.shape
-    n1 = int(np.log2(N))
-    if (N != 2**n1):
-      raise ValueError("'N' must be a power of 2")
-    n2 = int(np.log2(M))
-    if (M != 2**n2):
-      raise ValueError("'M' must be a power of 2")
+    ## make color mapping
+    norm = mco.Normalize(vmin=times[0], vmax=times[-1])
 
-   # initial condition
-    args = [alpha, beta, gamma, n1, n2]
-    X0 = sir_SI_to_X(S0, I0).copy().get()
-    event_upperbound = lattice_2d_event_upperbound
-    event_upperbound.terminal = True
+    ## make figure
+    fig = plt.figure(facecolor='w', figsize=figsize)
+    ax = fig.gca()
 
-    # integration
-    sol = solve_ivp(lattice_2d_ode, t_span=[0.,tmax], y0=X0, method=method, \
-                    args=args, t_eval=np.linspace(0,tmax,int(tmax/tdump) + 1), \
-                    events=event_upperbound)
+    ### plot profiles
+    for k in np.arange(Nt)[::idump]:
+        t = times[k]
+        Xm = X_list[k]
+        color = cmap(norm(t))
+        ax.plot(np.arange(N), Xm, 'o-', color=color, lw=0.5, ms=1)
+        i = np.argmin(np.abs(Xm - mass))
+        # print(np.min(Xm), np.max(Xm), mass, i, Xm[i])
+        ax.plot(i, [Xm[i]], 'o', color=color, ms=4)
 
-    times = sol.t
-    Xs = np.array([sir_X_to_SI_lattice_2d(x, n1, n2) for x in sol.y.T])
-    Ss = Xs[:,0]
-    Is = Xs[:,1]
-    return times, Ss, Is
+    ## axes properties
+    ax.set_xlim(0, None)
+    ax.set_ylim(0., None)
+    ax.set_ylabel(ylabel, fontsize='medium')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.tick_params(bottom=True, left=True, labelbottom=True, labelleft=True)
+    ax.tick_params(length=4)
+    fig.tight_layout(rect=[0.,0.,0.98,1.])
 
-def lattice_2d_ramp_fit(W, times, wmax, nfit=1000, maxfev=1000):
-    """
-    Fit the input function (times, W) to a ramp function.
-    """
-    from scipy.optimize import curve_fit
+    cax = fig.add_axes(rect=[0.98,0.2,0.01,0.7])
+    cbar = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap),
+                         cax=cax, extendfrac='auto')
+    cbar.set_label("time")
 
-    idx = W<wmax
-    Wfit = W[idx]
-    npts = len(Wfit)
-    ifit = max(1, int(float(npts)/nfit))
-    Yfit = Wfit[::ifit]
-    nfit = len(Yfit)
-    Xfit = np.arange(nfit)
 
-    a = 1.
-    c = (Yfit[-1]-Yfit[0])/(Xfit[-1]-Xfit[0])
-    b = Yfit[0] - c*np.log(2.)
-    P0 = [a,b,c]
-    P = curve_fit(framp, Xfit, Yfit, \
-              p0=P0, jac=framp_jac, \
-             maxfev=maxfev)[0]
+    if fileout is None:
+        plt.show()
+    else:
+        fig.savefig(fileout, bbox_inches='tight', pad_inches=0, dpi=dpi)
+        print(fileout)
+        fig.clf()
+        plt.close('all')
 
-    dt = np.diff(times)[0]
-    t_inter = dt*ifit
-    return P[0] / t_inter, P[1]*t_inter, P[2]
+def lattice_2d_plot_position(times_list, Xs_list, mass, \
+        ftol = 0.95, figsize=(4,3), fileout=None, dpi=300):
+    from scipy.interpolate import UnivariateSpline
+    from numpy.polynomial import Polynomial
 
-def lattice_2d_get_velocity(W, times, wmax, maxfev=1000):
-    a, b, c = lattice_2d_ramp_fit(W, times, wmax=wmax, maxfev=maxfev)
-    return a*c
+    n = len(times_list)
+    n_list = np.arange(n)
+    norm = mco.Normalize(vmin=n_list[0], vmax=n_list[-1])
+    cmap = cm.viridis
+    colors = cmap(norm(n_list))
 
-def lattice_2d_get_velocity_theoretical(beta, gamma, alpha, S_ss=1.):
-    """
-    Return the theoretical lower bound for the wave velocity
-    INPUT:
-      * beta: intercommunity infectivity rate
-      * gamma: recovery rate
-      * alpha: intracommunity infectivity rate
-      * S_ss: susceptible fraction right to the wave (before being hit).
-    """
-    a = 4 + alpha/beta
-    return 2*beta*S_ss * np.sqrt(a - gamma/(beta*S_ss))
+    ## make figure
+    fig = plt.figure(facecolor='w', figsize=figsize)
+    ax = fig.gca()
 
-def lattice_2d_rescale_wave_profile(kfit, X, dT, Z_C, Y_C, v, dx=1.):
-    """
-    Fit the wave profile (X, dT) to the ODE solution (X_C, dT_C)
-    """
-    # recenter the profile around 0
-    k0 = np.argmax(dT)
-    x0 = X[k0]
-    Z = kfit*(X.copy()-x0)
+    for n in n_list:
+        times = times_list[n]
+        Xs = Xs_list[n]
+        color=colors[n]
+        Nt, N = Xs.shape
 
-    # retain a window corresponding to the input ODE solution
-    zlo = max(np.min(Z_C), np.min(Z))
-    zhi = min(np.max(Z_C), np.max(Z))
-    idx = (Z >= zlo) & (Z <= zhi)
-    Z = Z[idx]
-    Y = dT.copy()[idx]
-    if (len(Z) > len(Z_C)):
-        raise ValueError("Increase resolution of ODE solution!")
+        # position
+        Z = np.argmin((Xs - mass[n])**2, axis=1)
 
-    # rescale Y
-    Y /= (v*kfit/2.)
+        ax.plot(times, Z, '-', color=color, lw=0.5)
 
-    return Z, Y
+        spl = UnivariateSpline(times, Z)
+        # ax.plot(times, spl(times), '--', color='red', lw=0.5)
+        # ax.plot(times, spl.derivative()(times), '--', color='red', lw=0.5)
+        # ax.plot(times, spl.derivative().derivative()(times), '--', color='red', lw=0.5)
+        # i0 = np.argmax(spl.derivative().derivative()(times))
+        # ax.axvline(x=times[i0], color='k', ls='-', lw=1.)
+        # i0 = np.argwhere((spl.derivative()(times)/np.max(spl.derivative()(times)) > ftol)).ravel()[0]
+        i0 = np.argwhere((spl.derivative()(times)/spl.derivative()(times[-1]) > ftol)).ravel()[0]
+        # ax.axvline(x=times[i0], color='k', ls='-', lw=1.)
 
-def lattice_2d_func_fit_wave_sol(kfit, X, G, X_C, dT_C, v, dx=1.):
-    """
-    Get the LSQ
-    """
-    X, G, X_binned, F = get_fit_wave_sol(kfit, X, G, X_C, dT_C, dx)
+        # c = Polynomial.fit(times[i0:], Z[i0:], deg=1)
+        a, b = np.polyfit(times[i0:], Z[i0:], deg=1)
+        xdata = np.array([times[i0], times[-1]])
+        ax.plot(xdata, a*xdata+b, '--', lw=1, color=color, label="v = {:.2f}".format(a))
 
-    n = len(X)
-    return np.sum((F-G/(v*kfit/2.))**2)/n
+    ## axes properties
+    ax.legend(loc='best', fontsize='medium')
+    ax.set_xlim(0, None)
+    ax.set_ylim(0., None)
+    ax.set_ylabel('site', fontsize='medium')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.tick_params(bottom=True, left=True, labelbottom=True, labelleft=True)
+    ax.tick_params(length=4)
+    fig.tight_layout()
+
+    if fileout is None:
+        plt.show()
+    else:
+        fig.savefig(fileout, bbox_inches='tight', pad_inches=0, dpi=dpi)
+        print(fileout)
+        fig.clf()
+        plt.close('all')
+
+def lattice_2d_plot_velocities(gamma_list, times_list, Xs_list, mass, \
+        ftol = 0.95, figsize=(4,3), fileout=None, dpi=300):
+    from scipy.interpolate import UnivariateSpline
+    from numpy.polynomial import Polynomial
+
+    n = len(times_list)
+    n_list = np.arange(n)
+
+    velocities = []
+    for n in n_list:
+        times = times_list[n]
+        Xs = Xs_list[n]
+        Nt, N = Xs.shape
+
+        # position
+        Z = np.argmin((Xs - mass[n])**2, axis=1)
+
+        spl = UnivariateSpline(times, Z)
+        i0 = np.argwhere((spl.derivative()(times)/spl.derivative()(times[-1]) > ftol)).ravel()[0]
+
+        a, b = np.polyfit(times[i0:], Z[i0:], deg=1)
+        velocities.append(a)
+
+    ## make figure
+    fig = plt.figure(facecolor='w', figsize=figsize, dpi=dpi)
+    ax = fig.gca()
+
+    ax.plot(gamma_list, velocities, '-o', color='darkblue', lw=0.5, ms=2)
+
+    Xfit = np.linspace(0., 1., 1000)
+    Yfit = 2.*np.sqrt(1.-Xfit)
+    ax.plot(Xfit, Yfit, '--', color='red', lw=0.5)
+
+    ## axes properties
+    # ax.legend(loc='best', fontsize='medium')
+    ax.set_xlim(0, None)
+    ax.set_ylim(0., None)
+    ax.set_xlabel('gamma', fontsize='medium')
+    ax.set_ylabel('velocity', fontsize='medium')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.tick_params(bottom=True, left=True, labelbottom=True, labelleft=True)
+    ax.tick_params(length=4)
+    fig.tight_layout()
+
+    if fileout is None:
+        plt.show()
+    else:
+        fig.savefig(fileout, bbox_inches='tight', pad_inches=0, dpi=dpi)
+        print(fileout)
+        fig.clf()
+        plt.close('all')
 
 #==============================================================================
 # plot methods
 #==============================================================================
-def show_image(mat_, downscale=None, log=False, mpl=False, vmin=None, vmax=None, fileout=None, dpi=72, interpolation='none', method='sum'):
+def show_image(mat_, downscale=None, log=False, mpl=True, vmin=None, vmax=None, fileout=None, dpi=72, interpolation='none', method='sum'):
     mat = np.copy(mat_)
     N = mat.shape[0]
     if downscale:
@@ -868,10 +697,10 @@ def show_image(mat_, downscale=None, log=False, mpl=False, vmin=None, vmax=None,
           # plt.show()
 
 def plot_omega_profile(Omegas, times, labels=None, colors=None, styles=None, fileout=Path('./animation.gif'), tpdir=Path('.'), \
-                       dpi=150, lw=0.5, ms=2, idump=10, \
-                       ymin=None, ymax=None, figsize=(4,3), fps=5, \
+                       dpi=150, lw=0.5, ms=2, \
+                       ymin=None, ymax=None, figsize=(4,3), fps=5, duration=10, \
                        log=True, xlabel='community', ylabel="$\Omega_a$", lgd_ncol=2, deletetp=True, exts=['.png'], \
-                       tfmt = "%Y-%m-%d"):
+                       tfmt = "%Y-%m-%d", verbose=False):
   """
   Save an animated image series (GIF) or movie (MP4), depending on the extension provided,
   representing the dynamics of local epidemic sizes
@@ -919,17 +748,22 @@ def plot_omega_profile(Omegas, times, labels=None, colors=None, styles=None, fil
     ymin = 10**(np.floor(np.log10(np.min(Omegas[:,0,:][idx]))))    # closest power of 10
   if ymax is None:
     ymax = 10**(np.ceil(np.log10(np.max(Omegas))))    # closest power of 10
-  print("ymin = {:.2e}".format(ymin), "ymax = {:.2e}".format(ymax))
+  if verbose:
+    print("ymin = {:.2e}".format(ymin), "ymax = {:.2e}".format(ymax))
 
   if not ".png" in exts:
     raise ValueError("PNG format must be given")
+
+  # determine dumping interval
+  nframes = duration*fps
+  idump = int(np.ceil(nt / nframes))
 
   # community index
   X = np.arange(N, dtype=np.uint)
 
   # prepare figure
   filenames=[]
-  for i in range(nt):
+  for i in np.arange(nt)[::idump]:
     ## update time and Omega
     t = times[i]
 
@@ -969,7 +803,7 @@ def plot_omega_profile(Omegas, times, labels=None, colors=None, styles=None, fil
     fpath = fname + ".png"
     filenames.append(fpath)
 
-    if (i %idump == 0):
+    if verbose:
       print(f"Written file {fpath}.")
 
     fig.clf()
@@ -986,10 +820,10 @@ def plot_omega_profile(Omegas, times, labels=None, colors=None, styles=None, fil
   return
 
 def plot_omega_map(Omega, times, XY, fileout=Path('./animation.gif'), tpdir=Path('.'), dpi=150, \
-                   vmin=None, vmax=None, figsize=(4,3), nframes=None, fps=5, \
-                   cmap=cm.magma_r, idump=1, tfmt = "%Y-%m-%d", ymin=None, ymax=None, \
+                   vmin=None, vmax=None, figsize=(4,3), nframes=None, fps=10, duration=10, \
+                   cmap=cm.magma_r, tfmt = "%Y-%m-%d", ymin=None, ymax=None, \
                    clabel='$\Omega$', deletetp=True, exts=['.png'], \
-                   circle_size=0.4, lw=0.1, edges=[], edge_width=0.5):
+                   circle_size=0.4, lw=0.1, edges=[], edge_width=0.5, verbose=False):
   """
   Save an animated image series (GIF) or movie (MP4), depending on the extension provided,
   representing the dynamics of local epidemic sizes
@@ -1024,8 +858,13 @@ def plot_omega_map(Omega, times, XY, fileout=Path('./animation.gif'), tpdir=Path
     vmin = 10**(np.floor(np.log10(np.min(Omega[0,:][idx]))))    # closest power of 10
   if vmax is None:
     vmax = 10**(np.ceil(np.log10(np.max(Omega))))    # closest power of 10
-  print("vmin = {:.2e}".format(vmin), "vmax = {:.2e}".format(vmax))
+  if verbose:
+    print("vmin = {:.2e}".format(vmin), "vmax = {:.2e}".format(vmax))
   norm = mco.LogNorm(vmin=vmin, vmax=vmax)
+
+  # determine dumping interval
+  nframes = duration*fps
+  idump = int(np.ceil(nt / nframes))
 
   # clusters
   X, Y = XY
@@ -1038,9 +877,7 @@ def plot_omega_map(Omega, times, XY, fileout=Path('./animation.gif'), tpdir=Path
 
   # prepare figure
   filenames=[]
-  for i in range(nt):
-    if (i %idump != 0):
-      continue
+  for i in np.arange(nt)[::idump]:
     ## update time and Omega
     t = times[i]
 
@@ -1101,7 +938,8 @@ def plot_omega_map(Omega, times, XY, fileout=Path('./animation.gif'), tpdir=Path
     fpath = fname + ".png"
     filenames.append(fpath)
 
-    print(f"Written file {fpath}.")
+    if verbose:
+      print(f"Written file {fpath}.")
 
     fig.clf()
     plt.close('all')
@@ -1115,3 +953,76 @@ def plot_omega_map(Omega, times, XY, fileout=Path('./animation.gif'), tpdir=Path
     shutil.rmtree(tpdir)
 
   return
+
+def plot_scatter(times, Xs, Ys, idump=1, vmin=None,vmax=None, \
+                 xlabel=None, ylabel=None, logscale=False, fpaths=['plot_scatter.png'], \
+                 cmap=cm.rainbow, figsize=(4,3), dpi=300, alpha=0.3, verbose=True):
+
+    Nt = len(times)
+    if Nt == 1:
+      colors = ['darkblue']
+    else:
+      ## color mapping with date value
+      indices = np.arange(Nt)
+      norm = mco.Normalize(vmin=np.min(indices), vmax=np.max(indices))
+      colors = cmap(norm(indices))
+
+    ## vmin, vmax
+    if vmin is None:
+        xmin = np.nanmin(Xs)
+        ymin = np.nanmin(Ys)
+        vmin = min(xmin, ymin)
+    if vmax is None:
+        xmax = np.nanmax(Xs)
+        ymax = np.nanmax(Ys)
+        vmax = max(xmax, ymax)
+
+    ## make figure
+    fig = plt.figure(facecolor='w', figsize=figsize, dpi=dpi)
+    ax = fig.gca()
+
+    for i in np.arange(Nt)[::idump]:
+        t = times[i]
+        X = Xs[i]
+        Y = Ys[i]
+
+        ax.plot(X, Y, 'o', color=colors[i], lw=0, mew=0, ms=2, alpha=alpha)
+
+    ax.plot([vmin, vmax], [vmin, vmax], 'k-', lw=0.5)
+    # plot formatting
+    ax.set_xlabel(xlabel, fontsize='medium')
+    ax.set_ylabel(ylabel, fontsize='medium')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.tick_params(bottom=True, left=True, labelbottom=True, labelleft=True)
+    ax.tick_params(length=4)
+    ax.set_xlim(vmin, vmax)
+    ax.set_ylim(vmin, vmax)
+    if logscale:
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+    ax.set_aspect('equal')
+
+    fig.tight_layout(rect=[0.,0.,0.95,1.])
+
+    if Nt > 1:
+      cax = fig.add_axes(rect=[0.99,0.2,0.01,0.7])
+      cbar = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap),cax=cax, extendfrac='auto')
+      nmonth = (times[-1].year-times[0].year)*12 + (times[-1].month-times[0].month)
+      tick_values = np.array([times[0] + relativedelta(months=i) for i in range(nmonth+1)])
+      tick_values = tick_values[::2]
+      ticks = [times.index(t) for t in tick_values]
+      # labels = [times[(t-1)*window].strftime('%Y-%m-%d') for t in np.array(ticks, dtype=np.int_)]
+      labels = [t.strftime('%Y-%m-%d') for t in tick_values]
+      cbar.set_ticks(ticks)
+      cbar.set_ticklabels(labels)
+
+    for fpath in fpaths:
+        fig.savefig(fpath, bbox_inches='tight', pad_inches=0, dpi=dpi)
+        if verbose:
+          print("Written file: {:s}".format(str(fpath)))
+    fig.clf()
+    plt.close('all')
+    # plt.show()
+    return
+
